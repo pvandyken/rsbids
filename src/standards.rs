@@ -1,49 +1,59 @@
+use bimap::BiMap;
 use once_cell::sync::Lazy;
 use std::collections::HashSet;
 
-pub static BIDS_ENTITIES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+pub fn get_key_alias(key: &str) -> &str {
+    match BIDS_ENTITIES.get_by_left(key) {
+        Some(key) => key,
+        None => key,
+    }
+}
+
+pub fn deref_key_alias(key: &str) -> Option<&str> {
+     BIDS_ENTITIES.get_by_right(key).copied()
+}
+
+pub static BIDS_ENTITIES: Lazy<BiMap<&'static str, &'static str>> = Lazy::new(|| {
     {
         [
-            "sub",
-            "ses",
-            "datatype",
-            "extension",
-            "suffix",
-            "sample",
-            "task",
-            "acq",
-            "ce",
-            "stain",
-            "trc",
-            "rec",
-            "dir",
-            "run",
-            "proc",
-            "mod",
-            "echo",
-            "flip",
-            "inv",
-            "mt",
-            "part",
-            "recording",
-            "space",
-            "chunk",
-            "null",
-            "null",
-            "null",
-            "split",
-            "atlas",
-            "roi",
-            "label",
-            "from",
-            "to",
-            "mode",
-            "hemi",
-            "res",
-            "den",
-            "model",
-            "subset",
-            "desc",
+            ("sub", "subject"),
+            ("ses", "session"),
+            ("datatype", "datatype"),
+            ("extension", "extension"),
+            ("suffix", "suffix"),
+            ("sample", "sample"),
+            ("task", "task"),
+            ("tracksys", "tracksys"),
+            ("acq", "acquisition"),
+            ("ce", "ceagent"),
+            ("stain", "staining"),
+            ("trc", "tracer"),
+            ("rec", "reconstruction"),
+            ("dir", "direction"),
+            ("run", "run"),
+            ("proc", "proc"),
+            ("mod", "modality"),
+            ("echo", "echo"),
+            ("flip", "flip"),
+            ("inv", "inv"),
+            ("mt", "mt"),
+            ("part", "part"),
+            ("recording", "recording"),
+            ("space", "space"),
+            ("chunk", "chunk"),
+            ("split", "split"),
+            ("atlas", "atlas"),
+            ("roi", "roi"),
+            ("label", "label"),
+            ("from", "from"),
+            ("to", "to"),
+            ("mode", "mode"),
+            ("hemi", "hemisphere"),
+            ("res", "res"),
+            ("den", "density"),
+            ("model", "model"),
+            ("subset", "subset"),
+            ("desc", "description"),
         ]
     }
     .iter()

@@ -1,14 +1,17 @@
 use std::{
+    collections::{HashMap, HashSet},
     ops::Range,
     path::{Component, Path},
 };
 
+use itertools::chain;
+
 use crate::{
-    dataset::Dataset,
     primitives::{ComponentType, Elements, KeyVal, PrePrimitive, Primitive},
+    standards::get_key_alias,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct UnknownDatatype {
     pub value: Range<usize>,
     pub is_valid: bool,
@@ -23,7 +26,7 @@ impl UnknownDatatype {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum UnknownDatatypeTypes {
     Linked(String, UnknownDatatype),
     Unlinked(UnknownDatatype),
@@ -31,7 +34,7 @@ pub enum UnknownDatatypeTypes {
 
 #[derive(Debug)]
 pub enum BidsPathPart {
-    Head,
+    Head(usize),
     Parent(KeyVal),
     Datatype(Range<usize>),
     Name(Name),
@@ -39,7 +42,7 @@ pub enum BidsPathPart {
     UncertainDatatype(UnknownDatatypeTypes),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BidsPath {
     pub path: String,
     pub entities: Vec<KeyVal>,
@@ -48,6 +51,8 @@ pub struct BidsPath {
     pub extension: Option<Range<usize>>,
     pub datatype: Option<Range<usize>>,
     pub parents: Vec<KeyVal>,
+    pub head: usize,
+    pub root: usize,
     pub uncertain_parents: Option<Vec<KeyVal>>,
     pub uncertain_datatypes: Option<Vec<UnknownDatatypeTypes>>,
 }
@@ -73,7 +78,7 @@ fn process_keylike(start: usize, end: usize, last_elem: Option<&Primitive>) -> P
         None => Primitive::Suffix(start, end),
     }
 }
-fn parse_path_segment<'a>(component: Range<usize>, template: &str) -> Vec<Primitive> {
+pub fn parse_path_segment<'a>(component: Range<usize>, template: &str) -> Vec<Primitive> {
     fn recurse(path: &str, start_i: usize, offset: usize, elems: &mut Vec<Primitive>) {
         let mut next_i = 0;
         let mut finish = false;
@@ -105,7 +110,7 @@ fn parse_path_segment<'a>(component: Range<usize>, template: &str) -> Vec<Primit
     primitives
 }
 
-fn classify_component<'a>(mut elements: Vec<Elements>) -> ComponentType {
+pub fn classify_component<'a>(mut elements: Vec<Elements>) -> ComponentType {
     if elements.len() > 1 {
         return ComponentType::TwoType(elements);
     }
@@ -116,7 +121,7 @@ fn classify_component<'a>(mut elements: Vec<Elements>) -> ComponentType {
     }
 }
 
-fn get_components(path: &str) -> Vec<Range<usize>> {
+pub fn get_components(path: &str) -> Vec<Range<usize>> {
     // let path = Path::new(&path);
     let mut components = Vec::new();
     let mut curr_i = 0;
@@ -182,55 +187,29 @@ pub fn group_primitives(mut data: Vec<Primitive>) -> Vec<Elements> {
 pub struct BidsPathComponents {
     pub components: Vec<ComponentType>,
 }
-
-impl BidsPathComponents {
-    pub fn to_bidsparts(path: &str, dataset: &Dataset) -> Vec<BidsPathPart> {
-        let components = get_components(&path);
-        let mut comps = Vec::new();
-        for component in components {
-            let elements = parse_path_segment(component, &path);
-            let elements = group_primitives(elements);
-            comps.push(classify_component(elements));
-        }
-
-        let is_twotype: Vec<bool> = comps
-            .iter()
-            .map(|comp| matches!(comp, ComponentType::TwoType(..)))
-            .collect();
-        let mut labelled = Vec::new();
-
-        let len = comps.len();
-        for (i, comp) in comps.into_iter().enumerate() {
-            if i + 1 == len {
-                labelled.push(BidsPathPart::Name(match comp {
-                    ComponentType::OneType(keyval) => Name::from_onetype(keyval),
-                    ComponentType::TwoType(elems) => Name::from_twotype(elems),
-                    ComponentType::ZeroType(comp) => Name::from_zerotype(comp),
-                }));
-                break;
-            }
-            let next_is_twotype = is_twotype[i + 1];
-            labelled.push(dataset.label_component_type(
-                labelled.last().unwrap_or(&BidsPathPart::Head),
-                comp,
-                path,
-                next_is_twotype,
-            ));
-        }
-        labelled
+pub fn to_bidsparts_patch(path: &str) -> Vec<ComponentType> {
+    let components = get_components(&path);
+    let mut comps = Vec::new();
+    for component in components {
+        let elements = parse_path_segment(component, &path);
+        let elements = group_primitives(elements);
+        comps.push(classify_component(elements));
     }
+    comps
 }
 
 impl BidsPath {
-    pub fn new(path: String) -> BidsPath {
+    pub fn new(path: String, root: usize) -> BidsPath {
         BidsPath {
             path: path,
+            head: 0,
             entities: vec![],
             parts: None,
             suffix: None,
             extension: None,
             datatype: None,
             parents: vec![],
+            root: root,
             uncertain_parents: None,
             uncertain_datatypes: None,
         }
@@ -242,6 +221,46 @@ impl BidsPath {
         } else {
             self.uncertain_parents = Some(vec![keyval])
         }
+    }
+
+    pub fn update_parents(&mut self, parents: &HashSet<String>) -> Option<()> {
+        if self.uncertain_parents.is_none() {
+            return None;
+        }
+        for parent in self.uncertain_parents.as_mut()?.drain(..) {
+            let key = parent.get_key(&self.path);
+            if parents.contains(key) {
+                self.parents.push(parent)
+            }
+        }
+        self.uncertain_parents = None;
+        Some(())
+    }
+
+    pub fn get_entities(&self) -> HashMap<&str, &str> {
+        let mut entities = HashMap::new();
+        for parent in chain![&self.parents, &self.entities] {
+            let (key, val) = parent.get(&self.path);
+            entities.insert(get_key_alias(key), val);
+        }
+        if let Some(datatype) = &self.datatype {
+            entities.insert("datatype", &self.path[datatype.clone()]);
+        }
+        if let Some(suffix) = &self.suffix {
+            entities.insert("suffix", &self.path[suffix.clone()]);
+        }
+        if let Some(extension) = &self.extension {
+            entities.insert("extension", &self.path[extension.clone()]);
+        }
+        entities
+    }
+
+    pub fn get_root(&self) -> &str {
+        &self.path[..self.root]
+    }
+
+    pub fn get_head(&self) -> &str {
+        &self.path[..self.head]
     }
 
     pub fn push_uncertain_datatype(&mut self, datatype: UnknownDatatypeTypes) {

@@ -1,11 +1,11 @@
-use std::{ffi::OsString, io, path::PathBuf};
+use std::{ffi::OsStr, io, path::PathBuf};
 
 use itertools::Itertools;
 // use async_walkdir::Filtering;
 // use futures_lite::{future::block_on, StreamExt};
 use walkdir::WalkDir;
 
-fn unicode_decode_err(os_string: OsString) -> io::Error {
+fn unicode_decode_err(os_string: &OsStr) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
         format!(
@@ -20,13 +20,12 @@ pub fn iterdir<F: FnMut(String)>(path: PathBuf, mut callback: F) -> Result<(), i
         return Ok(callback(
             path.into_os_string()
                 .into_string()
-                .map_err(|e| unicode_decode_err(e))?,
+                .map_err(|e| unicode_decode_err(&e))?,
         ));
-    } else {
-        WalkDir::new(path)
+    } else if path.exists() {
+        WalkDir::new(&path)
             .into_iter()
             .filter_entry(|entry| {
-                // dbg!(&entry);
                 if let Some(true) = entry
                     .path()
                     .file_name()
@@ -48,11 +47,14 @@ pub fn iterdir<F: FnMut(String)>(path: PathBuf, mut callback: F) -> Result<(), i
                 match entry {
                     Ok(entry) => {
                         if entry.path().is_file() {
-                            match entry.path().to_str() {
+                            match entry
+                                .path()
+                                // .strip_prefix(&path)
+                                // .expect("Should be a prefix given the way we generated the path")
+                                .to_str()
+                            {
                                 Some(path) => callback(path.to_string()),
-                                None => {
-                                    return Err(io::Error::new(io::ErrorKind::InvalidData, "Error"))
-                                }
+                                None => return Err(unicode_decode_err(entry.path().as_os_str())),
                             };
                         }
                     }
@@ -64,6 +66,11 @@ pub fn iterdir<F: FnMut(String)>(path: PathBuf, mut callback: F) -> Result<(), i
             })
             .collect_vec();
         Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("File not found: {}", path.to_string_lossy()),
+        ))
     }
     // block_on(async {
     //     let mut entries = async_walkdir::WalkDir::new(path).filter(|entry| async move {

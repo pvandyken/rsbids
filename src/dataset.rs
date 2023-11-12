@@ -1,259 +1,434 @@
-use std::collections::{HashMap, HashSet};
-
-use itertools::Itertools;
-
-use crate::{
-    bidspath::{BidsPath, BidsPathPart, Name, UnknownDatatype, UnknownDatatypeTypes, BidsPathComponents},
-    primitives::ComponentType,
-    standards::{BIDS_DATATYPES, BIDS_ENTITIES},
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Display,
+    ops::Range,
+    path::{Path, PathBuf},
+    sync::Arc,
 };
 
-type EntityTable = HashMap<String, HashMap<String, Vec<usize>>>;
+use itertools::Itertools;
+use once_cell::sync::OnceCell;
 
-trait EntityTableExt {
-    fn insert_entity(&mut self, i: usize, entity: &str, value: &str);
-}
+use builder::{DatasetBuilder, EntityTable, RootLabel};
+pub use iterator::BidsPathViewIterator;
 
-impl EntityTableExt for EntityTable {
-    fn insert_entity(&mut self, i: usize, entity: &str, value: &str) {
-        if let Some(val_map) = self.get_mut(entity) {
-            if let Some(vec) = val_map.get_mut(value) {
-                vec.push(i);
-            } else {
-                val_map.insert(value.to_string(), vec![i]);
-            }
-        } else {
-            let mut val_map = HashMap::new();
-            val_map.insert(value.to_string(), vec![i]);
-            self.insert(entity.to_string(), val_map);
-        }
-    }
-}
+use crate::{
+    bidspath::BidsPath,
+    fs::iterdir,
+    pyparams::derivatives::DerivativeSpec,
+    standards::{deref_key_alias, get_key_alias, BIDS_DATATYPES},
+};
+
+use self::roots::{DatasetRoot, DatasetRoots};
+
+mod builder;
+pub mod iterator;
+mod roots;
 
 pub fn check_datatype(datatype: &str) -> bool {
     BIDS_DATATYPES.contains(datatype)
 }
 
-#[derive(Debug, Default)]
+pub fn normalize_query(
+    query: HashMap<String, Vec<QueryTerms>>,
+) -> HashMap<String, Vec<QueryTerms>> {
+    query
+        .into_iter()
+        .map(|(key, vals)| {
+            let derefed = deref_key_alias(&key)
+                .map(ToString::to_string)
+                .unwrap_or(key);
+            (
+                derefed
+                    .strip_suffix("_")
+                    .map(ToString::to_string)
+                    .unwrap_or(derefed),
+                vals,
+            )
+        })
+        .collect()
+}
+
+#[derive(Eq, PartialEq, Hash)]
+pub enum QueryTerms {
+    Bool(bool),
+    String(String),
+}
+
+pub enum QueryErr {
+    MissingEntity(Vec<String>),
+    MissingVal(String, Vec<String>),
+    GlobErr(globset::Error),
+}
+
+impl Display for QueryErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            QueryErr::MissingVal(entity, vals) => f.write_fmt(format_args!(
+                "For entity: '{}': values not found: [{}]",
+                entity,
+                vals.iter().map(|val| format!("\"{}\"", val)).join(", ")
+            )),
+            QueryErr::MissingEntity(entities) => {
+                f.write_fmt(format_args!("Entity not found: [{}]", entities.join(", ")))
+            }
+            QueryErr::GlobErr(err) => f.write_fmt(format_args!("{}", err)),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct Dataset {
-    paths: Vec<BidsPath>,
+    paths: Arc<Vec<BidsPath>>,
     entities: EntityTable,
-    unknown_entities: EntityTable,
-    unknown_datatypes: HashSet<usize>,
+    pub roots: DatasetRoots,
+    view: OnceCell<HashSet<usize>>,
 }
 
 impl Dataset {
+    pub fn create(
+        paths: Vec<String>,
+        derivatives: Option<Vec<DerivativeSpec>>,
+    ) -> Result<Dataset, String> {
+        let mut dataset = DatasetBuilder::default();
+        let mut invalid_paths = Vec::new();
+        if let Some(deriv) = derivatives.as_ref() {
+            for d in deriv.iter().flat_map(|d| &d.paths) {
+                if !Path::new(&d).exists() {
+                    invalid_paths.push(d)
+                }
+            }
+        }
+        for path in &paths {
+            if !Path::new(&path).exists() {
+                invalid_paths.push(&path)
+            }
+        }
+        if invalid_paths.len() > 1 {
+            let mut msg = String::from("The following paths do not exist:\n");
+            for path in invalid_paths {
+                msg.push_str(&format!("  {}\n", path));
+            }
+            return Err(msg)
+        } else if let Some(path) = invalid_paths.first() {
+            return Err(format!("Path does not exist: {}", path))
+        }
+        for path in paths {
+            let rootpos = dataset
+                .register_root(Some(&path), RootLabel::Raw)
+                .unwrap_or(0);
+            match iterdir(PathBuf::from(path), |path| dataset.add_path(path, rootpos)) {
+                Ok(..) => Ok(()),
+                Err(e) => Err(format!("{}", e)),
+            }?;
+        }
+        if let Some(derivatives) = derivatives {
+            for derivative in derivatives {
+                let label = match derivative.label {
+                    Some(label) => RootLabel::DerivativeLabelled(label),
+                    None => RootLabel::DerivativeUnlabelled,
+                };
+                for path in derivative.paths {
+                    let rootpos = dataset
+                        .register_root(Some(&path), label.clone())
+                        .unwrap_or(0);
+                    match iterdir(PathBuf::from(path), |path| dataset.add_path(path, rootpos)) {
+                        Ok(..) => Ok(()),
+                        Err(e) => {
+                            dbg!(&e);
+                            Err(format!("{}", e))
+                        }
+                    }?;
+                }
+            }
+        }
+        Ok(dataset.finalize())
+    }
+
+    fn filter_root<'a>(
+        view: &HashSet<usize>,
+        root: (&'a String, &DatasetRoot),
+    ) -> Option<&'a String> {
+        let (root, ranges) = root;
+        if view.iter().any(|i| ranges.contains(i)) {
+            Some(root)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_roots(&self) -> Vec<&String> {
+        if let Some(view) = self.view.get() {
+            self.roots
+                .items()
+                .filter_map(|root| Self::filter_root(view, root))
+                .collect()
+        } else {
+            self.roots.keys().collect()
+        }
+    }
+
+    pub fn get_raw_roots(&self) -> Vec<&String> {
+        if let Some(view) = self.view.get() {
+            self.roots
+                .raw_items()
+                .filter_map(|root| Self::filter_root(view, root))
+                .collect()
+        } else {
+            self.roots.raw_keys().collect()
+        }
+    }
+
+    pub fn get_derivative_roots(&self) -> Vec<&String> {
+        if let Some(view) = self.view.get() {
+            self.roots
+                .derivative_items()
+                .filter_map(|root| Self::filter_root(view, root))
+                .collect()
+        } else {
+            self.roots.derivative_keys().collect()
+        }
+    }
+
+    pub fn display_root_ranges(&self) -> String {
+        format!("{:?}", self.roots)
+    }
+
+    pub fn entity_keys(&self) -> impl Iterator<Item = &String> {
+        self.entities.keys()
+    }
+
+    pub fn entity_vals(&self, key: &str) -> Option<Vec<&String>> {
+        self.entities.get(key).map(|val| val.keys().collect_vec())
+    }
+
+    pub fn entity_key_vals(&self) -> HashMap<&String, Vec<&String>> {
+        self.entities
+            .iter()
+            .map(|(key, value)| (key, value.keys().collect_vec()))
+            .collect()
+    }
+
+    pub fn entity_fullkey_vals(&self) -> HashMap<&str, Vec<&String>> {
+        self.entities
+            .iter()
+            .map(|(key, value)| (get_key_alias(key), value.keys().collect_vec()))
+            .collect()
+    }
+
+    pub fn fmt_elided_list(&self, limit: usize) -> String {
+        let mut msg = String::from("[ ");
+        msg.push_str(
+            &self
+                .get_paths()
+                .take(limit)
+                .map(|bp| format!("\"{}\"", bp.path))
+                .join("\n  "),
+        );
+        if self.len() > limit {
+            msg.push_str("\n  ...")
+        }
+        msg.push_str(" ]");
+        msg
+    }
+
+    pub fn all_indices(&self) -> &HashSet<usize> {
+        self.view
+            .get_or_init(|| self.full_range().into_iter().collect())
+    }
+
+    fn full_range(&self) -> Range<usize> {
+        0..self.paths.len()
+    }
+
+    pub fn all_entity_indices(&self, entity: &str) -> Option<HashSet<usize>> {
+        Some(
+            self.entities
+                .get(entity)?
+                .values()
+                .fold(HashSet::<usize>::new(), |set, next| &set | next),
+        )
+    }
+
+    pub fn get_paths(&self) -> BidsPathViewIterator {
+        if let Some(_) = self.view.get() {
+            BidsPathViewIterator::new(
+                Arc::clone(&self.paths),
+                self.entity_keys().cloned().collect(),
+                Some(self.all_indices().clone()),
+            )
+        } else {
+            BidsPathViewIterator::new(
+                Arc::clone(&self.paths),
+                self.entity_keys().cloned().collect(),
+                None,
+            )
+        }
+    }
+
+    pub fn get_path(&self, index: usize) -> Option<BidsPath> {
+        self.paths.get(index).cloned().map(|mut path| {
+            path.update_parents(&self.entity_keys().cloned().collect());
+            path
+        })
+    }
+
     pub fn num_paths(&self) -> usize {
         self.paths.len()
     }
 
-    pub fn get_path(&self, index: usize) -> Option<&str> {
-        Some(&self.paths.get(index)?.path)
-    }
-}
-
-
-impl Dataset {
-    fn add_entity(&mut self, i: usize, entity: &str, value: &str) {
-        if self.check_entity(entity) {
-            self.entities.insert_entity(i, entity, value)
+    pub fn len(&self) -> usize {
+        if let Some(idx) = self.view.get() {
+            idx.len()
         } else {
-            self.unknown_entities.insert_entity(i, entity, value)
+            self.num_paths()
         }
     }
 
-    fn confirm_entity(&mut self, entity: &str) {
-        if let Some((entity, value)) = self.unknown_entities.remove_entry(entity) {
-            self.entities.insert(entity, value);
-        }
-    }
-    fn add_and_confirm_entity(&mut self, i: usize, entity: &str, value: &str) {
-        self.confirm_entity(entity);
-        self.entities.insert_entity(i, entity, value)
-    }
-    fn check_entity(&self, entity: &str) -> bool {
-        self.entities.contains_key(entity) || BIDS_ENTITIES.contains(entity)
+    pub fn get_scopes(&self, scopes: Vec<String>) -> Result<Option<Vec<String>>, QueryErr> {
+        self.roots.get_scopes(scopes)
     }
 
-
-    fn add_uncertain_datatype(&mut self, i: usize) {
-        self.unknown_datatypes.insert(i);
-    }
-
-    pub fn label_component_type<'b>(
+    fn query_entity(
         &self,
-        previous: &BidsPathPart,
-        comp: ComponentType,
-        template: &str,
-        next_is_twotype: bool,
-    ) -> BidsPathPart {
-        match comp {
-            ComponentType::TwoType(elems) => BidsPathPart::Name(Name::from_twotype(elems)),
-            ComponentType::OneType(keyval) => match previous {
-                BidsPathPart::Head => {
-                    if self.check_entity(keyval.get_key(template)) {
-                        BidsPathPart::Parent(keyval)
-                    } else {
-                        BidsPathPart::UncertainParent(keyval)
+        query: Vec<QueryTerms>,
+        entity: &String,
+        values: &HashMap<String, HashSet<usize>>,
+        new_entities: &mut HashMap<String, HashMap<String, HashSet<usize>>>,
+    ) -> Result<Option<HashSet<usize>>, QueryErr> {
+        let mut new_entity_vals = HashMap::new();
+        let mut has_true = false;
+        let mut has_false = false;
+        let mut queried: HashSet<_> = query
+            .into_iter()
+            .filter_map(|query| match query {
+                QueryTerms::Bool(boolean) => match boolean {
+                    true => {
+                        has_true = true;
+                        None
                     }
-                }
-                BidsPathPart::Datatype(..) | BidsPathPart::Name(..) => {
-                    BidsPathPart::Name(Name::from_onetype(keyval))
-                }
-                BidsPathPart::Parent(..) => BidsPathPart::Parent(keyval),
-                BidsPathPart::UncertainParent(..) | BidsPathPart::UncertainDatatype(..) => {
-                    BidsPathPart::UncertainParent(keyval)
-                }
-            },
-            ComponentType::ZeroType(comp) => match previous {
-                BidsPathPart::Head => {
-                    if next_is_twotype || check_datatype(&template[comp.clone()]) {
-                        BidsPathPart::Datatype(comp)
-                    } else {
-                        BidsPathPart::Head
+                    false => {
+                        has_false = true;
+                        None
                     }
+                },
+                QueryTerms::String(string) => Some(string),
+            })
+            .collect();
+        let mut selection: HashSet<usize> = values
+            .iter()
+            .filter_map(|(label, indices)| {
+                if queried.remove(label) || has_true {
+                    new_entity_vals.insert(label.clone(), indices.clone());
+                    Some(indices)
+                } else {
+                    None
                 }
-                BidsPathPart::Datatype(..) | BidsPathPart::Name(..) => {
-                    BidsPathPart::Name(Name::from_zerotype(comp))
-                }
-                BidsPathPart::Parent(..) => BidsPathPart::Datatype(comp),
-                BidsPathPart::UncertainDatatype(..) => {
-                    let is_valid = next_is_twotype || check_datatype(&template[comp.clone()]);
-                    BidsPathPart::UncertainDatatype(UnknownDatatypeTypes::Unlinked(
-                        UnknownDatatype::new(comp, is_valid),
-                    ))
-                }
-                BidsPathPart::UncertainParent(keyval) => {
-                    let is_valid = next_is_twotype || check_datatype(&template[comp.clone()]);
-                    BidsPathPart::UncertainDatatype(UnknownDatatypeTypes::Linked(
-                        keyval.get_key(template).to_string(),
-                        UnknownDatatype::new(comp, is_valid),
-                    ))
-                }
-            },
+            })
+            .fold(HashSet::new(), |set, next| &set | next);
+        if has_false {
+            let false_indices: HashSet<_> = self
+                .all_indices()
+                .difference(&self.all_entity_indices(&entity).unwrap())
+                .cloned()
+                .collect();
+            selection = &selection | &false_indices;
+        }
+        new_entities.insert(entity.clone(), new_entity_vals);
+        if queried.len() > 0 {
+            Err(QueryErr::MissingVal(
+                entity.clone(),
+                queried.into_iter().collect(),
+            ))
+        } else {
+            Ok(Some(selection))
         }
     }
 
-    pub fn add_path(&mut self, path: String) {
-        let next_i = self.paths.len();
-        let bidsparts = BidsPathComponents::to_bidsparts(&path, self);
-        let mut bidspath = BidsPath::new(path);
-
-        self.collect_elements(next_i, &mut bidspath, bidsparts);
-        self.paths.push(bidspath);
-    }
-
-    fn first_valid_datatype(
+    pub fn query(
         &self,
-        uncertain_datatypes: &mut Vec<UnknownDatatypeTypes>,
-    ) -> Option<UnknownDatatype> {
-        while let Some(dt) = uncertain_datatypes.pop() {
-            match dt {
-                UnknownDatatypeTypes::Linked(entity, dt) => {
-                    if self.check_entity(&entity) || dt.is_valid {
-                        return Some(dt);
-                    }
-                }
-                UnknownDatatypeTypes::Unlinked(dt) => {
-                    if dt.is_valid {
-                        return Some(dt);
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    fn extract_uncertain_datatypes(&mut self, i: usize) -> Option<Vec<UnknownDatatypeTypes>> {
-        let path = &mut self.paths[i];
-        let mut datatypes = None;
-        std::mem::swap(&mut path.uncertain_datatypes, &mut datatypes);
-        datatypes
-    }
-
-    pub fn cleanup(&mut self) {
-        self.unknown_entities.clear();
-        self.unknown_entities.shrink_to_fit();
-        let unknown_datatypes = self.unknown_datatypes.drain().collect_vec();
-        self.unknown_datatypes.shrink_to_fit();
-        for i in unknown_datatypes {
-            let mut datatypes = self.extract_uncertain_datatypes(i);
-            if let Some(datatypes) = datatypes.as_mut() {
-                if let Some(dt) = self.first_valid_datatype(datatypes) {
-                    self.paths[i].datatype = Some(dt.value)
-                }
-                while let Some(dt) = datatypes.pop() {
-                    match dt {
-                        UnknownDatatypeTypes::Linked(_, dt) => self.paths[i].push_part(dt.value),
-                        UnknownDatatypeTypes::Unlinked(dt) => self.paths[i].push_part(dt.value),
-                    }
-                }
-            }
-        }
-    }
-
-    fn collect_elements(&mut self, path_i: usize, path: &mut BidsPath, parts: Vec<BidsPathPart>) {
-        let mut named_entities = HashSet::new();
-        for (i, part) in parts.into_iter().rev().enumerate() {
-            match part {
-                BidsPathPart::Head => (),
-                BidsPathPart::Parent(keyval) => {
-                    let (key, value) = keyval.get(&path.path);
-                    if !named_entities.contains(key) {
-                        self.add_and_confirm_entity(path_i, key, value);
-                        path.parents.push(keyval)
-                    }
-                }
-                BidsPathPart::UncertainParent(keyval) => {
-                    let (key, value) = keyval.get(&path.path);
-                    self.add_entity(path_i, key, value);
-                    path.add_uncertain_parent(keyval)
-                }
-                BidsPathPart::Datatype(comp) => {
-                    self.add_entity(path_i, "datatype", &path[&comp]);
-                    path.datatype = Some(comp)
-                }
-                BidsPathPart::Name(mut name) => {
-                    if let Some(parts) = name.parts {
-                        path.extend_parts(parts)
-                    }
-                    if i == 0 {
-                        if let Some(mut suffix) = name.suffix {
-                            if let Some(extension) = path.extract_extension(&mut suffix) {
-                                self.add_entity(path_i, "extension", &path[&extension]);
-                                path.extension = Some(extension);
-                            }
-                            self.add_entity(path_i, "suffix", &path[&suffix]);
-                            path.suffix = Some(suffix)
-                        } else if let Some(keyval) = name.entities.as_mut().and_then(|kv| kv.pop())
-                        {
-                            if let Some(extension) = path.extract_extension(&mut keyval.val_range())
-                            {
-                                self.add_entity(path_i, "extension", &path[&extension]);
-                                path.extension = Some(extension);
-                            }
-                            let (key, value) = keyval.get(&path.path);
-                            self.add_and_confirm_entity(path_i, key, value);
-                            named_entities.insert(keyval.get_key(&path.path).to_string());
-                            path.entities.push(keyval);
+        query: Option<HashMap<String, Vec<QueryTerms>>>,
+        roots: Option<Vec<String>>,
+    ) -> Result<Dataset, QueryErr> {
+        let mut new_entities = HashMap::new();
+        let queried = match query {
+            Some(query) => Some({
+                let mut query = normalize_query(query);
+                let selected = self
+                    .entities
+                    .iter()
+                    .map(|(entity, values)| match query.remove(entity) {
+                        Some(queried) => {
+                            self.query_entity(queried, entity, values, &mut new_entities)
                         }
-                    } else if let Some(suffix) = name.suffix {
-                        path.push_part(suffix)
-                    }
-                    if let Some(entities) = name.entities {
-                        for entity in entities {
-                            let (key, value) = entity.get(&path.path);
-                            self.add_and_confirm_entity(path_i, key, value);
-                            named_entities.insert(entity.get_key(&path.path).to_string());
-                            path.entities.push(entity);
+                        None => {
+                            new_entities.insert(entity.clone(), values.clone());
+                            Ok(None)
                         }
-                    }
+                    })
+                    .collect::<Result<Vec<_>, _>>();
+
+                if query.len() > 0 {
+                    return Err(QueryErr::MissingEntity(query.keys().cloned().collect()));
                 }
-                BidsPathPart::UncertainDatatype(datatype) => {
-                    self.add_uncertain_datatype(path_i);
-                    path.push_uncertain_datatype(datatype)
-                }
+
+                selected?
+                    .into_iter()
+                    .flatten()
+                    .reduce(|set, next| &set & &next)
+                    .unwrap_or_else(|| HashSet::new())
+            }),
+            None => {
+                new_entities = self.entities.clone();
+                None
             }
-        }
+        };
+
+        let roots = roots
+            .map(|roots| Ok(self.roots.glob_roots(roots).map_err(QueryErr::GlobErr)?))
+            .transpose()?;
+
+        let root_ranges = roots.as_ref().map(|roots| roots.full_range());
+
+        let selected = vec![root_ranges, queried]
+            .into_iter()
+            .flatten()
+            .reduce(|set, next| &set & &next);
+
+        let filtered_entities: HashMap<_, _> = if let Some(selected) = &selected {
+            new_entities
+                .into_iter()
+                .filter_map(|(entity, values)| {
+                    let filtered_values: HashMap<_, _> = values
+                        .into_iter()
+                        .filter_map(|(value, insts)| {
+                            let new = selected & &insts;
+                            if new.len() > 0 {
+                                Some((value, new))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if filtered_values.len() > 0 {
+                        Some((entity, filtered_values))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            new_entities
+        };
+
+        Ok(Dataset {
+            paths: Arc::clone(&self.paths),
+            entities: filtered_entities,
+            roots: roots.unwrap_or_else(|| self.roots.clone()),
+            view: match selected {
+                Some(selected) => OnceCell::with_value(selected),
+                None => OnceCell::new(),
+            },
+        })
     }
 }
