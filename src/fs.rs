@@ -26,11 +26,12 @@ pub fn iterdir<F: FnMut(String)>(path: PathBuf, mut callback: F) -> Result<(), i
         WalkDir::new(&path)
             .into_iter()
             .filter_entry(|entry| {
-                if let Some(true) = entry
-                    .path()
-                    .file_name()
-                    .map(|f| f.to_string_lossy() == "dataset_description.json")
-                {
+                if let Some(true) = entry.path().file_name().map(|f| {
+                    let path = f.to_string_lossy();
+                    path == "dataset_description.json"
+                        || path.starts_with(".")
+                        || path == "derivatives"
+                }) {
                     false
                 } else if let Some(true) = entry
                     .path()
