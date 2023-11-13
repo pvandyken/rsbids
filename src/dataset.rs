@@ -14,7 +14,7 @@ pub use iterator::BidsPathViewIterator;
 
 use crate::{
     bidspath::BidsPath,
-    fs::iterdir,
+    fs::{iterdir, iterdir_async},
     pyparams::derivatives::DerivativeSpec,
     standards::{deref_key_alias, get_key_alias, BIDS_DATATYPES},
 };
@@ -89,6 +89,7 @@ impl Dataset {
     pub fn create(
         paths: Vec<String>,
         derivatives: Option<Vec<DerivativeSpec>>,
+        async_walk: bool,
     ) -> Result<Dataset, String> {
         let mut dataset = DatasetBuilder::default();
         let mut invalid_paths = Vec::new();
@@ -109,15 +110,17 @@ impl Dataset {
             for path in invalid_paths {
                 msg.push_str(&format!("  {}\n", path));
             }
-            return Err(msg)
+            return Err(msg);
         } else if let Some(path) = invalid_paths.first() {
-            return Err(format!("Path does not exist: {}", path))
+            return Err(format!("Path does not exist: {}", path));
         }
         for path in paths {
             let rootpos = dataset
                 .register_root(Some(&path), RootLabel::Raw)
                 .unwrap_or(0);
-            match iterdir(PathBuf::from(path), |path| dataset.add_path(path, rootpos)) {
+            match (if async_walk { iterdir_async } else { iterdir })(PathBuf::from(path), |path| {
+                dataset.add_path(path, rootpos)
+            }) {
                 Ok(..) => Ok(()),
                 Err(e) => Err(format!("{}", e)),
             }?;

@@ -79,8 +79,8 @@ pub struct Layout {
 #[pymethods]
 impl Layout {
     #[new]
-    #[pyo3(signature = (paths, derivatives=None))]
-    pub fn new(paths: PathList, derivatives: Option<DerivativesParam>) -> PyResult<Self> {
+    #[pyo3(signature = (paths, derivatives=None, async_walk=false))]
+    pub fn new(paths: PathList, derivatives: Option<DerivativesParam>, async_walk: bool) -> PyResult<Self> {
         let paths = paths.unpack()?;
         let derivatives = if let Some(d) = derivatives {
             match d.unpack()? {
@@ -105,7 +105,7 @@ impl Layout {
             None
         };
         Ok(Layout {
-            raw: Dataset::create(paths, derivatives).map_err(|err| PyIOError::new_err(err))?,
+            raw: Dataset::create(paths, derivatives, async_walk).map_err(|err| PyIOError::new_err(err))?,
         })
     }
 

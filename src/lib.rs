@@ -31,6 +31,6 @@ mod tests {
 
     #[test]
     fn main() {
-        let _ = Dataset::create(vec!["data".to_string()], None);
+        let _ = Dataset::create(vec!["data".to_string()], None, false);
     }
 }
