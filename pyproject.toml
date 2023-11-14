@@ -15,3 +15,9 @@ build-backend = "maturin"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
+
+[tool.pdm.dev-dependencies]
+dev = [
+    "pytest-benchmark>=4.0.0",
+    "pytest>=7.4.3",
+]

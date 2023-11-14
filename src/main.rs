@@ -12,5 +12,5 @@ fn main() {
         eprintln!("No arguments given!");
         exit(1)
     }
-    let _ = Dataset::create(args, None, false);
+    let _ = Dataset::create(args, None);
 }

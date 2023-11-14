@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
+    io,
     ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
@@ -9,20 +10,21 @@ use std::{
 use itertools::Itertools;
 use once_cell::sync::OnceCell;
 
-use builder::{DatasetBuilder, EntityTable, RootLabel};
+use builder::{DatasetBuilder, RootLabel};
 pub use iterator::BidsPathViewIterator;
 
 use crate::{
     bidspath::BidsPath,
-    fs::{iterdir, iterdir_async},
+    fs::{iterdir, IterdirErr},
     pyparams::derivatives::DerivativeSpec,
     standards::{deref_key_alias, get_key_alias, BIDS_DATATYPES},
 };
 
-use self::roots::{DatasetRoot, DatasetRoots};
+use self::{roots::{DatasetRoot, DatasetRoots}, entity_table::EntityTable};
 
 mod builder;
 pub mod iterator;
+pub mod entity_table;
 mod roots;
 
 pub fn check_datatype(datatype: &str) -> bool {
@@ -77,6 +79,10 @@ impl Display for QueryErr {
     }
 }
 
+fn missing_paths_err(msg: String) -> IterdirErr {
+    IterdirErr::Io(io::Error::new(io::ErrorKind::NotFound, msg))
+}
+
 #[derive(Clone)]
 pub struct Dataset {
     paths: Arc<Vec<BidsPath>>,
@@ -89,8 +95,7 @@ impl Dataset {
     pub fn create(
         paths: Vec<String>,
         derivatives: Option<Vec<DerivativeSpec>>,
-        async_walk: bool,
-    ) -> Result<Dataset, String> {
+    ) -> Result<Dataset, IterdirErr> {
         let mut dataset = DatasetBuilder::default();
         let mut invalid_paths = Vec::new();
         if let Some(deriv) = derivatives.as_ref() {
@@ -110,20 +115,16 @@ impl Dataset {
             for path in invalid_paths {
                 msg.push_str(&format!("  {}\n", path));
             }
-            return Err(msg);
+            return Err(missing_paths_err(msg));
         } else if let Some(path) = invalid_paths.first() {
-            return Err(format!("Path does not exist: {}", path));
+            return Err(missing_paths_err(format!("Path does not exist: {}", path,)));
         }
+
         for path in paths {
             let rootpos = dataset
                 .register_root(Some(&path), RootLabel::Raw)
                 .unwrap_or(0);
-            match (if async_walk { iterdir_async } else { iterdir })(PathBuf::from(path), |path| {
-                dataset.add_path(path, rootpos)
-            }) {
-                Ok(..) => Ok(()),
-                Err(e) => Err(format!("{}", e)),
-            }?;
+            iterdir(PathBuf::from(path), |path| dataset.add_path(path, rootpos))?;
         }
         if let Some(derivatives) = derivatives {
             for derivative in derivatives {
@@ -135,13 +136,7 @@ impl Dataset {
                     let rootpos = dataset
                         .register_root(Some(&path), label.clone())
                         .unwrap_or(0);
-                    match iterdir(PathBuf::from(path), |path| dataset.add_path(path, rootpos)) {
-                        Ok(..) => Ok(()),
-                        Err(e) => {
-                            dbg!(&e);
-                            Err(format!("{}", e))
-                        }
-                    }?;
+                    iterdir(PathBuf::from(path), |path| dataset.add_path(path, rootpos))?;
                 }
             }
         }

@@ -9,11 +9,8 @@ use std::{
 use json::{object::Object, JsonValue};
 
 pub fn find_dataset_description(path: &Path) -> Option<&Path> {
-    while let Some(path) = path.parent() {
-        if path.as_os_str().is_empty() {
-            return None;
-        }
-        if path.join("dataset_description.json").exists() {
+    for parent in path.ancestors() {
+        if parent.join("dataset_description.json").exists() {
             return Some(path);
         }
     }

@@ -7,8 +7,9 @@ use std::{
 use itertools::chain;
 
 use crate::{
+    dataset::{check_datatype, entity_table::EntityTable},
     primitives::{ComponentType, Elements, KeyVal, PrePrimitive, Primitive},
-    standards::get_key_alias,
+    standards::{get_key_alias, BIDS_ENTITIES},
 };
 
 #[derive(Debug, Clone)]
@@ -215,6 +216,7 @@ impl BidsPath {
         }
     }
 
+
     pub fn add_uncertain_parent(&mut self, keyval: KeyVal) {
         if let Some(up) = self.uncertain_parents.as_mut() {
             up.push(keyval)
@@ -352,5 +354,234 @@ impl Name {
         let mut name = Name::default();
         name.suffix = Some(comp);
         name
+    }
+}
+
+#[derive(Debug)]
+pub struct BidsPathBuilder {
+    pub path: String,
+    pub components: Vec<ComponentType>,
+    pub root: usize,
+}
+
+impl BidsPathBuilder {
+    pub fn new(path: String, root: usize) -> Self {
+        let components = get_components(&path);
+        let mut comps = Vec::new();
+        for component in components {
+            let elements = parse_path_segment(component, &path);
+            let elements = group_primitives(elements);
+            comps.push(classify_component(elements));
+        }
+        Self {
+            path,
+            components: comps,
+            root,
+        }
+    }
+
+    pub fn with_seperate_labels(
+        self,
+        known_entities: &EntityTable,
+    ) -> (BidsPath, Vec<BidsPathPart>) {
+        let is_twotype: Vec<bool> = self
+            .components
+            .iter()
+            .map(|comp| matches!(comp, ComponentType::TwoType(..)))
+            .collect();
+        let mut labelled = Vec::new();
+
+        let len = self.components.len();
+        for (i, comp) in self.components.into_iter().enumerate() {
+            if i + 1 == len {
+                labelled.push(BidsPathPart::Name(match comp {
+                    ComponentType::OneType(keyval) => Name::from_onetype(keyval),
+                    ComponentType::TwoType(elems) => Name::from_twotype(elems),
+                    ComponentType::ZeroType(comp) => Name::from_zerotype(comp),
+                }));
+                break;
+            }
+            let next_is_twotype = is_twotype[i + 1];
+            labelled.push(Self::label_component_type(
+                labelled.last().unwrap_or(&BidsPathPart::Head(0)),
+                comp,
+                &self.path,
+                next_is_twotype,
+                known_entities,
+            ));
+        }
+        (BidsPath::new(self.path, self.root), labelled)
+    }
+
+    pub fn via_spec(self) -> Result<BidsPath, Self> {
+        let mut bidspath = BidsPath::new(self.path, self.root);
+        let mut lastmatch = BidsPathPart::Head(0);
+        let known_entities: EntityTable = HashMap::new();
+        let len = self.components.len();
+        for (i, comp) in self.components.into_iter().enumerate() {
+            match comp {
+                ComponentType::ZeroType(range) => match lastmatch {
+                    BidsPathPart::Head(..) => {
+                        if check_datatype(&bidspath.path[range.clone()]) {
+                            bidspath.datatype = Some(range.clone());
+                            lastmatch = BidsPathPart::Datatype(range);
+                        } else {
+                            bidspath.head = range.end;
+                            lastmatch = BidsPathPart::Head(range.end)
+                        }
+                    }
+                    BidsPathPart::Parent(..) => {
+                        if check_datatype(&bidspath.path[range.clone()]) {
+                            bidspath.datatype = Some(range.clone());
+                            lastmatch = BidsPathPart::Datatype(range);
+                        } else if i + 1 == len {
+                            // Last component can't be zero-type
+                            return Err(Self::new(bidspath.path, bidspath.root));
+                        } else {
+                            bidspath.push_part(range.clone());
+                            lastmatch = BidsPathPart::Name(Name::from_zerotype(range));
+                        }
+                    }
+                    BidsPathPart::Datatype(..) | BidsPathPart::Name(..) => {
+                        if i + 1 == len {
+                            // Last component can't be zero-type
+                            return Err(Self::new(bidspath.path, bidspath.root));
+                        } else {
+                            bidspath.push_part(range.clone());
+                            lastmatch = BidsPathPart::Name(Name::from_zerotype(range));
+                        }
+                    }
+                    _ => panic!("Uncertain types should not be possible here")
+                },
+                ComponentType::OneType(keyval) => match lastmatch {
+                    BidsPathPart::Head(..) => {
+                        if Self::check_entity(keyval.get_key(&bidspath.path), &known_entities) {
+                            bidspath.parents.push(keyval.clone());
+                            lastmatch = BidsPathPart::Parent(keyval);
+                        } else {
+                            bidspath.head = keyval.slice.end;
+                            lastmatch = BidsPathPart::Head(keyval.slice.end)
+                        }
+                    }
+                    BidsPathPart::Parent(..) => {
+                        if Self::check_entity(keyval.get_key(&bidspath.path), &known_entities) {
+                            bidspath.parents.push(keyval.clone());
+                            lastmatch = BidsPathPart::Parent(keyval);
+                        } else if i + 1 == len {
+                            // Last component can't be one-type
+                            return Err(Self::new(bidspath.path, bidspath.root));
+                        } else {
+                            bidspath.push_part(keyval.slice.clone());
+                            lastmatch = BidsPathPart::Name(Name::from_zerotype(keyval.slice));
+                        }
+                    }
+                    BidsPathPart::Datatype(..) | BidsPathPart::Name(..) => {
+                        if Self::check_entity(keyval.get_key(&bidspath.path), &known_entities) {
+                            bidspath.parents.push(keyval.clone());
+                            lastmatch = BidsPathPart::Parent(keyval);
+                        } else if i + 1 == len {
+                            // Last component can't be one-type
+                            return Err(Self::new(bidspath.path, bidspath.root));
+                        } else {
+                            bidspath.push_part(keyval.slice.clone());
+                            lastmatch = BidsPathPart::Name(Name::from_zerotype(keyval.slice));
+                        }
+                    }
+                    _ => panic!("Uncertain types should not be possible here")
+                },
+                ComponentType::TwoType(elems) => {
+                    lastmatch = BidsPathPart::Name(Name::from_zerotype(0..0));
+                    for (j, elem) in elems.into_iter().rev().enumerate() {
+                        if j == 0 && i + 1 == len {
+                            match elem {
+                                Elements::Suffix(range) => {
+                                    bidspath.suffix = Some(range);
+                                }
+                                _ => {
+                                    // Very last element must be suffix
+                                    return Err(Self::new(bidspath.path, bidspath.root));
+                                }
+                            }
+                        } else {
+                            match elem {
+                                Elements::KeyVal(keyval) => {
+                                    if Self::check_entity(
+                                        keyval.get_key(&bidspath.path),
+                                        &known_entities,
+                                    ) {
+                                        bidspath.parents.push(keyval.clone());
+                                    } else {
+                                        bidspath.push_part(keyval.slice.clone());
+                                    }
+                                }
+                                Elements::Part(range) | Elements::Suffix(range) => {
+                                    bidspath.push_part(range)
+                                }
+                            }
+                        }
+                    }
+
+                }
+            }
+        }
+        Ok(bidspath)
+    }
+
+    fn check_entity(entity: &str, known_entities: &EntityTable) -> bool {
+        known_entities.contains_key(entity) || BIDS_ENTITIES.contains_left(entity)
+    }
+
+    fn label_component_type<'b>(
+        previous: &BidsPathPart,
+        comp: ComponentType,
+        template: &str,
+        next_is_twotype: bool,
+        known_entities: &EntityTable,
+    ) -> BidsPathPart {
+        match comp {
+            ComponentType::TwoType(elems) => BidsPathPart::Name(Name::from_twotype(elems)),
+            ComponentType::OneType(keyval) => match previous {
+                BidsPathPart::Head(..) => {
+                    if Self::check_entity(keyval.get_key(template), known_entities) {
+                        BidsPathPart::Parent(keyval)
+                    } else {
+                        BidsPathPart::UncertainParent(keyval)
+                    }
+                }
+                BidsPathPart::Datatype(..) | BidsPathPart::Name(..) => {
+                    BidsPathPart::Name(Name::from_onetype(keyval))
+                }
+                BidsPathPart::Parent(..) => BidsPathPart::Parent(keyval),
+                BidsPathPart::UncertainParent(..) | BidsPathPart::UncertainDatatype(..) => {
+                    BidsPathPart::UncertainParent(keyval)
+                }
+            },
+            ComponentType::ZeroType(comp) => match previous {
+                BidsPathPart::Head(..) => {
+                    if next_is_twotype || check_datatype(&template[comp.clone()]) {
+                        BidsPathPart::Datatype(comp)
+                    } else {
+                        BidsPathPart::Head(comp.end)
+                    }
+                }
+                BidsPathPart::Datatype(..) | BidsPathPart::Name(..) => {
+                    BidsPathPart::Name(Name::from_zerotype(comp))
+                }
+                BidsPathPart::Parent(..) => BidsPathPart::Datatype(comp),
+                BidsPathPart::UncertainDatatype(..) => {
+                    let is_valid = next_is_twotype || check_datatype(&template[comp.clone()]);
+                    BidsPathPart::UncertainDatatype(UnknownDatatypeTypes::Unlinked(
+                        UnknownDatatype::new(comp, is_valid),
+                    ))
+                }
+                BidsPathPart::UncertainParent(keyval) => {
+                    let is_valid = next_is_twotype || check_datatype(&template[comp.clone()]);
+                    BidsPathPart::UncertainDatatype(UnknownDatatypeTypes::Linked(
+                        keyval.get_key(template).to_string(),
+                        UnknownDatatype::new(comp, is_valid),
+                    ))
+                }
+            },
+        }
     }
 }

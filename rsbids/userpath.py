@@ -12,9 +12,7 @@ class UserPathImpl(type(Path())):
     entities: dict[str, str]
 
     def __new__(cls, *pathsegments: StrPath, **kwargs: Any):
-        obj = super().__new__(cls, *pathsegments, **kwargs)
-        obj.__init__(*pathsegments, **kwargs)
-        return obj
+        return super().__new__(cls, *pathsegments, **kwargs)
 
     def __init__(self, *pathsegments: StrPath, **kwargs: Any):
         super().__init__()

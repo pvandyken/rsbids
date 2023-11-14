@@ -10,29 +10,17 @@ use itertools::Itertools;
 use once_cell::sync::OnceCell;
 
 use crate::{
-    bidspath::{
-        classify_component, get_components, group_primitives, parse_path_segment, BidsPath,
-        BidsPathPart, Name, UnknownDatatype, UnknownDatatypeTypes,
-    },
+    bidspath::{BidsPath, BidsPathBuilder, BidsPathPart, UnknownDatatype, UnknownDatatypeTypes},
     dataset_description::find_dataset_description,
-    primitives::ComponentType,
     standards::BIDS_ENTITIES,
 };
 
 use super::{
-    check_datatype,
+    entity_table::EntityTable,
     roots::{DatasetRoot, RootCategory},
     Dataset,
 };
 
-#[derive(Debug, Clone)]
-pub enum RootLabel {
-    Raw,
-    DerivativeUnlabelled,
-    DerivativeLabelled(String),
-}
-
-pub type EntityTable = HashMap<String, HashMap<String, HashSet<usize>>>;
 trait EntityTableExt {
     fn insert_entity(&mut self, i: usize, entity: &str, value: &str);
 }
@@ -52,6 +40,14 @@ impl EntityTableExt for EntityTable {
         }
     }
 }
+
+#[derive(Debug, Clone)]
+pub enum RootLabel {
+    Raw,
+    DerivativeUnlabelled,
+    DerivativeLabelled(String),
+}
+
 #[derive(Debug, Clone)]
 enum PartialRoot {
     Raw(String, Range<usize>),
@@ -72,42 +68,6 @@ pub struct DatasetBuilder {
 }
 
 impl DatasetBuilder {
-    pub fn to_bidsparts(&self, path: &str) -> Vec<BidsPathPart> {
-        let components = get_components(&path);
-        let mut comps = Vec::new();
-        for component in components {
-            let elements = parse_path_segment(component, &path);
-            let elements = group_primitives(elements);
-            comps.push(classify_component(elements));
-        }
-
-        let is_twotype: Vec<bool> = comps
-            .iter()
-            .map(|comp| matches!(comp, ComponentType::TwoType(..)))
-            .collect();
-        let mut labelled = Vec::new();
-
-        let len = comps.len();
-        for (i, comp) in comps.into_iter().enumerate() {
-            if i + 1 == len {
-                labelled.push(BidsPathPart::Name(match comp {
-                    ComponentType::OneType(keyval) => Name::from_onetype(keyval),
-                    ComponentType::TwoType(elems) => Name::from_twotype(elems),
-                    ComponentType::ZeroType(comp) => Name::from_zerotype(comp),
-                }));
-                break;
-            }
-            let next_is_twotype = is_twotype[i + 1];
-            labelled.push(self.label_component_type(
-                labelled.last().unwrap_or(&BidsPathPart::Head(0)),
-                comp,
-                path,
-                next_is_twotype,
-            ));
-        }
-        labelled
-    }
-
     fn add_entity(&mut self, i: usize, entity: &str, value: &str) {
         if self.check_entity(entity) {
             self.entities.insert_entity(i, entity, value)
@@ -133,66 +93,15 @@ impl DatasetBuilder {
         self.unknown_datatypes.insert(i);
     }
 
-    pub fn label_component_type<'b>(
-        &self,
-        previous: &BidsPathPart,
-        comp: ComponentType,
-        template: &str,
-        next_is_twotype: bool,
-    ) -> BidsPathPart {
-        match comp {
-            ComponentType::TwoType(elems) => BidsPathPart::Name(Name::from_twotype(elems)),
-            ComponentType::OneType(keyval) => match previous {
-                BidsPathPart::Head(..) => {
-                    if self.check_entity(keyval.get_key(template)) {
-                        BidsPathPart::Parent(keyval)
-                    } else {
-                        BidsPathPart::UncertainParent(keyval)
-                    }
-                }
-                BidsPathPart::Datatype(..) | BidsPathPart::Name(..) => {
-                    BidsPathPart::Name(Name::from_onetype(keyval))
-                }
-                BidsPathPart::Parent(..) => BidsPathPart::Parent(keyval),
-                BidsPathPart::UncertainParent(..) | BidsPathPart::UncertainDatatype(..) => {
-                    BidsPathPart::UncertainParent(keyval)
-                }
-            },
-            ComponentType::ZeroType(comp) => match previous {
-                BidsPathPart::Head(..) => {
-                    if next_is_twotype || check_datatype(&template[comp.clone()]) {
-                        BidsPathPart::Datatype(comp)
-                    } else {
-                        BidsPathPart::Head(comp.end)
-                    }
-                }
-                BidsPathPart::Datatype(..) | BidsPathPart::Name(..) => {
-                    BidsPathPart::Name(Name::from_zerotype(comp))
-                }
-                BidsPathPart::Parent(..) => BidsPathPart::Datatype(comp),
-                BidsPathPart::UncertainDatatype(..) => {
-                    let is_valid = next_is_twotype || check_datatype(&template[comp.clone()]);
-                    BidsPathPart::UncertainDatatype(UnknownDatatypeTypes::Unlinked(
-                        UnknownDatatype::new(comp, is_valid),
-                    ))
-                }
-                BidsPathPart::UncertainParent(keyval) => {
-                    let is_valid = next_is_twotype || check_datatype(&template[comp.clone()]);
-                    BidsPathPart::UncertainDatatype(UnknownDatatypeTypes::Linked(
-                        keyval.get_key(template).to_string(),
-                        UnknownDatatype::new(comp, is_valid),
-                    ))
-                }
-            },
-        }
-    }
-
     pub fn register_root(&mut self, root: Option<&String>, label: RootLabel) -> Option<usize> {
+        println!("registering {:?}", &root);
         let (len, root) = root
             .map(|path| {
                 let len = path.len();
                 let path = PathBuf::from(path);
+                println!("In loop with {:?}", &root);
                 if let Some(description_path) = find_dataset_description(&path) {
+                    println!("found dataset description");
                     let description_path = description_path.to_string_lossy();
                     let len = description_path.len();
                     Some((len, description_path.to_string()))
@@ -200,17 +109,20 @@ impl DatasetBuilder {
                     if let Some(rootpath) = path.parent() {
                         let rootpath = rootpath.to_string_lossy();
                         let len = rootpath.len();
+                        println!("Using parent");
                         Some((len, rootpath.to_string()))
                     } else {
                         None
                     }
                 } else {
+                    println!("Use root directly");
                     Some((len, path.to_string_lossy().to_string()))
                 }
             })
             .flatten()
             .map(|(len, path)| (Some(len), Some(path)))
             .unwrap_or((None, None));
+        println!("processed");
 
         // Holding ground for new root, as we don't know the extent of it's range
         let new_range = self.paths.len()..0;
@@ -277,8 +189,8 @@ impl DatasetBuilder {
 
     pub fn add_path(&mut self, path: String, root: usize) {
         let next_i = self.paths.len();
-        let bidsparts = self.to_bidsparts(&path);
-        let mut bidspath = BidsPath::new(path, root);
+        let (mut bidspath, bidsparts) =
+            BidsPathBuilder::new(path, root).with_seperate_labels(&self.entities);
 
         self.collect_elements(next_i, &mut bidspath, bidsparts);
         self.paths.push(bidspath);

@@ -8,6 +8,8 @@ use pyo3::types::PyDict;
 
 use crate::bidspath::BidsPath;
 use crate::dataset::{BidsPathViewIterator, Dataset, QueryErr, QueryTerms};
+use crate::fs::IterdirErr;
+use crate::pybidspath::to_pybidspath;
 use crate::pyparams::derivatives::{discover_derivatives, DerivativeSpecModes, DerivativesParam};
 use crate::pyparams::pathlist::PathList;
 use crate::pyparams::scope::ScopeList;
@@ -30,18 +32,6 @@ impl PyBidsPath {
     }
 }
 
-fn to_pybidspath(path: BidsPath) -> PyResult<PyObject> {
-    Python::with_gil(|py| {
-        let bidspathcls = py.import("rsbids.helpers")?.getattr("BidsPath")?;
-        let kwargs = PyDict::new(py);
-        kwargs.set_item("entities", path.get_entities())?;
-        kwargs.set_item("dataset_root", path.get_root())?;
-
-        bidspathcls
-            .call((path.path,), Some(kwargs))
-            .map(|any| any.into())
-    })
-}
 
 #[pyclass]
 pub struct LayoutIterator {
@@ -79,8 +69,8 @@ pub struct Layout {
 #[pymethods]
 impl Layout {
     #[new]
-    #[pyo3(signature = (paths, derivatives=None, async_walk=false))]
-    pub fn new(paths: PathList, derivatives: Option<DerivativesParam>, async_walk: bool) -> PyResult<Self> {
+    #[pyo3(signature = (paths, derivatives=None))]
+    pub fn new(paths: PathList, derivatives: Option<DerivativesParam>) -> PyResult<Self> {
         let paths = paths.unpack()?;
         let derivatives = if let Some(d) = derivatives {
             match d.unpack()? {
@@ -99,13 +89,16 @@ impl Layout {
                         "derivatives=True can only be specified when a root is provided",
                     )),
                 },
-                None => Ok(None)
+                None => Ok(None),
             }?
         } else {
             None
         };
         Ok(Layout {
-            raw: Dataset::create(paths, derivatives, async_walk).map_err(|err| PyIOError::new_err(err))?,
+            raw: Dataset::create(paths, derivatives).map_err(|err| match err {
+                IterdirErr::Interrupt(err) => err,
+                IterdirErr::Io(err) => PyIOError::new_err(err),
+            })?,
         })
     }
 
