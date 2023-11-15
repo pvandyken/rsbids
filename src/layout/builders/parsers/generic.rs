@@ -2,12 +2,12 @@ use crate::{
     layout::{
         builders::{
             bidspath_builder::{BidsPathBuilder, BidsPathPart, Name},
-            LayoutBuilder,
+            LayoutBuilder, primitives::ComponentType,
         },
         check_datatype,
         entity_table::EntityTable, bidspath::{BidsPath, UnknownDatatypeTypes, UnknownDatatype},
     },
-    primitives::ComponentType, standards::BIDS_ENTITIES,
+     standards::BIDS_ENTITIES,
 };
 
 impl BidsPathBuilder {

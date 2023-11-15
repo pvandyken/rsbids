@@ -5,10 +5,9 @@ use std::{
 
 use itertools::chain;
 
-use crate::{
-    primitives::{ComponentType, KeyVal},
-    standards::get_key_alias,
-};
+use crate::standards::get_key_alias;
+
+use super::builders::primitives::KeyVal;
 
 #[derive(Debug, Clone)]
 pub struct UnknownDatatype {
@@ -44,10 +43,6 @@ pub struct BidsPath {
     pub root: usize,
     pub uncertain_parents: Option<Vec<KeyVal>>,
     pub uncertain_datatypes: Option<Vec<UnknownDatatypeTypes>>,
-}
-
-pub struct BidsPathComponents {
-    pub components: Vec<ComponentType>,
 }
 
 impl BidsPath {

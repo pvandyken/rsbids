@@ -5,6 +5,7 @@ use itertools::Itertools;
 use pyo3::exceptions::{PyBaseException, PyIOError, PyKeyError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 
+use super::pyparams::pyiterable::py_iter;
 use super::{
     pybidspath::to_pybidspath,
     pyparams::{
@@ -16,7 +17,6 @@ use super::{
 use crate::layout::bidspath::BidsPath;
 use crate::layout::{BidsPathViewIterator, Layout, QueryErr, QueryTerms};
 use crate::fs::IterdirErr;
-use crate::utils::py_iter;
 
 #[pyclass(module = "rsbids", name = "BidsPath")]
 pub struct PyBidsPath {

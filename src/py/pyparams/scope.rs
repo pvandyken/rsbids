@@ -1,9 +1,8 @@
 use itertools::Itertools;
 use pyo3::{FromPyObject, PyAny, PyResult, Python};
 
-use crate::utils::PyIterable;
 
-use super::iterable::IterableParam;
+use super::{iterable::IterableParam, pyiterable::PyIterable};
 
 #[derive(FromPyObject)]
 pub enum ScopeListType<'a> {

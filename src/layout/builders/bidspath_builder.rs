@@ -3,10 +3,13 @@ use std::{
     path::{Component, Path},
 };
 
-use crate::{
-    layout::bidspath::{BidsPath, UnknownDatatypeTypes},
-    primitives::{ComponentType, Elements, KeyVal, PrePrimitive, Primitive},
-};
+use crate::layout::bidspath::{BidsPath, UnknownDatatypeTypes};
+
+use super::primitives::{ComponentType, Elements, KeyVal, PrePrimitive, Primitive};
+
+pub struct BidsPathComponents {
+    pub components: Vec<ComponentType>,
+}
 
 #[derive(Debug)]
 pub enum BidsPathPart {

@@ -5,10 +5,8 @@ use pyo3::prelude::*;
 pub mod layout;
 pub mod dataset_description;
 pub mod fs;
-pub mod primitives;
 pub mod py;
 pub mod standards;
-pub mod utils;
 
 /// A Python module implemented in Rust.
 #[pymodule]

@@ -2,10 +2,14 @@ use std::ops::Range;
 
 use crate::{
     layout::{
-        builders::{bidspath_builder::BidsPathBuilder, LayoutBuilder},
-        check_datatype, bidspath::BidsPath,
+        bidspath::BidsPath,
+        builders::{
+            bidspath_builder::BidsPathBuilder,
+            primitives::{ComponentType, Elements, KeyVal},
+            LayoutBuilder,
+        },
+        check_datatype,
     },
-    primitives::{ComponentType, Elements, KeyVal},
     standards::BIDS_ENTITIES,
 };
 
@@ -36,7 +40,6 @@ impl SpecParser<'_> {
         if let Some(builder) = &mut self.ds_builder.as_mut() {
             builder.add_head(&self.bidspath.path[head.clone()])
         }
-
     }
     fn handle_twotype(&mut self, elems: Vec<Elements>, last_component: bool) -> Result<(), ()> {
         for (j, elem) in elems.into_iter().rev().enumerate() {

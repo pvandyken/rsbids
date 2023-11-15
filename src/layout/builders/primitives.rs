@@ -2,14 +2,6 @@ use std::{collections::HashSet, fmt, ops::Range};
 
 use itertools::Itertools;
 
-#[derive(Debug)]
-pub struct Slice(pub usize, pub usize);
-
-impl Slice {
-    pub fn get<'a>(&self, template: &'a str) -> &'a str {
-        &template[self.0..self.1]
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct MultiRange<I> {

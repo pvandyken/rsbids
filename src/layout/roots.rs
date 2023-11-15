@@ -8,9 +8,9 @@ use std::{
 use globset::{Glob, GlobSetBuilder};
 use itertools::Itertools;
 
-use crate::{dataset_description::DatasetDescription, primitives::MultiRange};
+use crate::dataset_description::DatasetDescription;
 
-use super::QueryErr;
+use super::{builders::primitives::MultiRange, QueryErr};
 
 #[derive(Clone, Debug)]
 pub enum RootType<I> {

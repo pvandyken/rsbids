@@ -7,9 +7,8 @@ use std::{
 use itertools::Itertools;
 use pyo3::{types::PyIterator, FromPyObject, PyAny, PyErr, PyResult, Python};
 
-use crate::utils::PyIterable;
 
-use super::iterable::IterableParam;
+use super::{iterable::IterableParam, pyiterable::PyIterable};
 
 #[derive(FromPyObject)]
 pub enum DerivativesParamPrimitiveType {
