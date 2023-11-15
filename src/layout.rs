@@ -1,315 +1,443 @@
-use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Display,
+    io,
+    ops::Range,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use itertools::Itertools;
-use pyo3::exceptions::{PyBaseException, PyIOError, PyKeyError, PyTypeError, PyValueError};
-use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use once_cell::sync::OnceCell;
 
-use crate::bidspath::BidsPath;
-use crate::dataset::{BidsPathViewIterator, Dataset, QueryErr, QueryTerms};
-use crate::fs::IterdirErr;
-use crate::pybidspath::to_pybidspath;
-use crate::pyparams::derivatives::{discover_derivatives, DerivativeSpecModes, DerivativesParam};
-use crate::pyparams::pathlist::PathList;
-use crate::pyparams::scope::ScopeList;
-use crate::utils::py_iter;
+use builders::{LayoutBuilder, RootLabel};
+pub use iterator::BidsPathViewIterator;
 
-#[pyclass(module = "rsbids", name = "BidsPath")]
-pub struct PyBidsPath {
-    path: BidsPath,
+use crate::{
+    fs::{iterdir, IterdirErr},
+    py::pyparams::derivatives::DerivativeSpec,
+    standards::{deref_key_alias, get_key_alias, BIDS_DATATYPES},
+};
+
+use self::{
+    entity_table::EntityTable,
+    roots::{DatasetRoot, DatasetRoots},
+    bidspath::BidsPath,
+};
+
+pub mod builders;
+pub mod entity_table;
+pub mod iterator;
+pub mod bidspath;
+mod roots;
+
+pub fn check_datatype(datatype: &str) -> bool {
+    BIDS_DATATYPES.contains(datatype)
 }
 
-#[pymethods]
-impl PyBidsPath {
-    fn __repr__(&self) -> String {
-        format!("Artefact(\"{}\"", &self.path.path)
-    }
+pub fn normalize_query(
+    query: HashMap<String, Vec<QueryTerms>>,
+) -> HashMap<String, Vec<QueryTerms>> {
+    query
+        .into_iter()
+        .map(|(key, vals)| {
+            let derefed = deref_key_alias(&key)
+                .map(ToString::to_string)
+                .unwrap_or(key);
+            (
+                derefed
+                    .strip_suffix("_")
+                    .map(ToString::to_string)
+                    .unwrap_or(derefed),
+                vals,
+            )
+        })
+        .collect()
+}
 
-    #[getter]
-    fn entities(&self) -> HashMap<&str, &str> {
-        self.path.get_entities()
+#[derive(Eq, PartialEq, Hash)]
+pub enum QueryTerms {
+    Bool(bool),
+    String(String),
+}
+
+pub enum QueryErr {
+    MissingEntity(Vec<String>),
+    MissingVal(String, Vec<String>),
+    GlobErr(globset::Error),
+}
+
+impl Display for QueryErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            QueryErr::MissingVal(entity, vals) => f.write_fmt(format_args!(
+                "For entity: '{}': values not found: [{}]",
+                entity,
+                vals.iter().map(|val| format!("\"{}\"", val)).join(", ")
+            )),
+            QueryErr::MissingEntity(entities) => {
+                f.write_fmt(format_args!("Entity not found: [{}]", entities.join(", ")))
+            }
+            QueryErr::GlobErr(err) => f.write_fmt(format_args!("{}", err)),
+        }
     }
 }
 
-
-#[pyclass]
-pub struct LayoutIterator {
-    iter: BidsPathViewIterator,
+fn missing_paths_err(msg: String) -> IterdirErr {
+    IterdirErr::Io(io::Error::new(io::ErrorKind::NotFound, msg))
 }
 
-#[pymethods]
-impl LayoutIterator {
-    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
-        slf
-    }
-
-    fn __next__(mut slf: PyRefMut<'_, Self>) -> PyResult<Option<PyObject>> {
-        slf.iter.next().map(|obj| to_pybidspath(obj)).transpose()
-    }
-}
-
-fn map_query_terms(term: &PyAny) -> PyResult<QueryTerms> {
-    if let Ok(boolean) = term.extract::<bool>() {
-        Ok(QueryTerms::Bool(boolean))
-    } else if let Ok(string) = term.extract::<String>() {
-        Ok(QueryTerms::String(string))
-    } else {
-        Err(PyTypeError::new_err(
-            "query terms must be strings or booleans",
-        ))
-    }
-}
-
-#[pyclass(module = "rsbids", name = "BidsLayout")]
+#[derive(Clone)]
 pub struct Layout {
-    raw: Dataset,
+    paths: Arc<Vec<BidsPath>>,
+    entities: EntityTable,
+    pub roots: DatasetRoots,
+    view: OnceCell<HashSet<usize>>,
 }
 
-#[pymethods]
 impl Layout {
-    #[new]
-    #[pyo3(signature = (paths, derivatives=None))]
-    pub fn new(paths: PathList, derivatives: Option<DerivativesParam>) -> PyResult<Self> {
-        let paths = paths.unpack()?;
-        let derivatives = if let Some(d) = derivatives {
-            match d.unpack()? {
-                Some(DerivativeSpecModes::Set(d)) => Ok(Some(d)),
-                Some(DerivativeSpecModes::Discover) => match paths.first() {
-                    Some(path) => {
-                        if path.len() > 1 {
-                            Err(PyValueError::new_err(
-                                "derivatives=True can only be specified when a single root is provided"
-                            ))
-                        } else {
-                            Ok(discover_derivatives(Path::new(path))?)
-                        }
-                    }
-                    None => Err(PyValueError::new_err(
-                        "derivatives=True can only be specified when a root is provided",
-                    )),
-                },
-                None => Ok(None),
-            }?
+    pub fn create(
+        paths: Vec<String>,
+        derivatives: Option<Vec<DerivativeSpec>>,
+        validate: bool
+    ) -> Result<Layout, IterdirErr> {
+        let mut dataset = LayoutBuilder::default();
+        let mut invalid_paths = Vec::new();
+        if let Some(deriv) = derivatives.as_ref() {
+            for d in deriv.iter().flat_map(|d| &d.paths) {
+                if !Path::new(&d).exists() {
+                    invalid_paths.push(d)
+                }
+            }
+        }
+        for path in &paths {
+            if !Path::new(&path).exists() {
+                invalid_paths.push(&path)
+            }
+        }
+        if invalid_paths.len() > 1 {
+            let mut msg = String::from("The following paths do not exist:\n");
+            for path in invalid_paths {
+                msg.push_str(&format!("  {}\n", path));
+            }
+            return Err(missing_paths_err(msg));
+        } else if let Some(path) = invalid_paths.first() {
+            return Err(missing_paths_err(format!("Path does not exist: {}", path,)));
+        }
+
+        for path in paths {
+            let rootpos = dataset
+                .register_root(Some(&path), RootLabel::Raw)
+                .unwrap_or(0);
+            iterdir(PathBuf::from(path), |path| {
+                // Ignoring validation errors for now
+                dataset.add_path(path, rootpos, validate).unwrap_or(())
+            })?;
+        }
+        if let Some(derivatives) = derivatives {
+            for derivative in derivatives {
+                let label = match derivative.label {
+                    Some(label) => RootLabel::DerivativeLabelled(label),
+                    None => RootLabel::DerivativeUnlabelled,
+                };
+                for path in derivative.paths {
+                    let rootpos = dataset
+                        .register_root(Some(&path), label.clone())
+                        .unwrap_or(0);
+                    iterdir(PathBuf::from(path), |path| {
+                        // Ignoring validation errors for now
+                        dataset.add_path(path, rootpos, validate).unwrap_or(())
+                    })?;
+                }
+            }
+        }
+        Ok(dataset.finalize())
+    }
+
+    fn filter_root<'a>(
+        view: &HashSet<usize>,
+        root: (&'a String, &DatasetRoot),
+    ) -> Option<&'a String> {
+        let (root, ranges) = root;
+        if view.iter().any(|i| ranges.contains(i)) {
+            Some(root)
         } else {
             None
-        };
-        Ok(Layout {
-            raw: Dataset::create(paths, derivatives).map_err(|err| match err {
-                IterdirErr::Interrupt(err) => err,
-                IterdirErr::Io(err) => PyIOError::new_err(err),
-            })?,
-        })
-    }
-
-    #[getter]
-    fn entities(&self) -> PyResult<HashMap<&str, Vec<&String>>> {
-        Ok(self.raw.entity_fullkey_vals())
-    }
-
-    #[getter]
-    fn roots(&self) -> Vec<&String> {
-        self.raw.get_roots()
-    }
-
-    #[getter]
-    fn root(&self) -> PyResult<&String> {
-        fn try_with(r: Vec<&String>) -> PyResult<Option<&String>> {
-            if r.len() > 1 {
-                let mut msg = String::from("Layout is multi-root:\n");
-                for root in r {
-                    msg.push_str(&format!("  {}\n", root));
-                }
-                Err(PyValueError::new_err(msg))
-            } else if let Some(root) = r.first() {
-                Ok(Some(root))
-            } else {
-                Ok(None)
-            }
         }
-        if let Some(root) = try_with(self.raw.get_raw_roots())? {
-            Ok(root)
-        } else if let Some(root) = try_with(self.raw.get_derivative_roots())? {
-            Ok(root)
+    }
+
+    pub fn get_roots(&self) -> Vec<&String> {
+        if let Some(view) = self.view.get() {
+            self.roots
+                .items()
+                .filter_map(|root| Self::filter_root(view, root))
+                .collect()
         } else {
-            Err(PyBaseException::new_err(
-                "Unexpected problem: no roots found",
-            ))
+            self.roots.keys().collect()
         }
     }
 
-    #[getter]
-    fn derivatives(&self) -> PyResult<Self> {
-        let deriv_roots = self
-            .raw
-            .roots
-            .derivative_keys()
-            .map(|s| s.to_string())
-            .collect_vec();
-        if deriv_roots.len() == 0 {
-            return Err(PyValueError::new_err("Layout has no derivatives"));
+    pub fn get_raw_roots(&self) -> Vec<&String> {
+        if let Some(view) = self.view.get() {
+            self.roots
+                .raw_items()
+                .filter_map(|root| Self::filter_root(view, root))
+                .collect()
+        } else {
+            self.roots.raw_keys().collect()
         }
-        Ok(Self {
-            raw: self
-                .raw
-                .query(None, Some(deriv_roots))
-                .map_err(|err| PyBaseException::new_err(format!("Unexpected error: {}", err)))?,
+    }
+
+    pub fn get_derivative_roots(&self) -> Vec<&String> {
+        if let Some(view) = self.view.get() {
+            self.roots
+                .derivative_items()
+                .filter_map(|root| Self::filter_root(view, root))
+                .collect()
+        } else {
+            self.roots.derivative_keys().collect()
+        }
+    }
+
+    pub fn display_root_ranges(&self) -> String {
+        format!("{:?}", self.roots)
+    }
+
+    pub fn entity_keys(&self) -> impl Iterator<Item = &String> {
+        self.entities.keys()
+    }
+
+    pub fn entity_vals(&self, key: &str) -> Option<Vec<&String>> {
+        self.entities.get(key).map(|val| val.keys().collect_vec())
+    }
+
+    pub fn entity_key_vals(&self) -> HashMap<&String, Vec<&String>> {
+        self.entities
+            .iter()
+            .map(|(key, value)| (key, value.keys().collect_vec()))
+            .collect()
+    }
+
+    pub fn entity_fullkey_vals(&self) -> HashMap<&str, Vec<&String>> {
+        self.entities
+            .iter()
+            .map(|(key, value)| (get_key_alias(key), value.keys().collect_vec()))
+            .collect()
+    }
+
+    pub fn fmt_elided_list(&self, limit: usize) -> String {
+        let mut msg = String::from("[ ");
+        msg.push_str(
+            &self
+                .get_paths()
+                .take(limit)
+                .map(|bp| format!("\"{}\"", bp.path))
+                .join("\n  "),
+        );
+        if self.len() > limit {
+            msg.push_str("\n  ...")
+        }
+        msg.push_str(" ]");
+        msg
+    }
+
+    pub fn all_indices(&self) -> &HashSet<usize> {
+        self.view
+            .get_or_init(|| self.full_range().into_iter().collect())
+    }
+
+    fn full_range(&self) -> Range<usize> {
+        0..self.paths.len()
+    }
+
+    pub fn all_entity_indices(&self, entity: &str) -> Option<HashSet<usize>> {
+        Some(
+            self.entities
+                .get(entity)?
+                .values()
+                .fold(HashSet::<usize>::new(), |set, next| &set | next),
+        )
+    }
+
+    pub fn get_paths(&self) -> BidsPathViewIterator {
+        if let Some(_) = self.view.get() {
+            BidsPathViewIterator::new(
+                Arc::clone(&self.paths),
+                self.entity_keys().cloned().collect(),
+                Some(self.all_indices().clone()),
+            )
+        } else {
+            BidsPathViewIterator::new(
+                Arc::clone(&self.paths),
+                self.entity_keys().cloned().collect(),
+                None,
+            )
+        }
+    }
+
+    pub fn get_path(&self, index: usize) -> Option<BidsPath> {
+        self.paths.get(index).cloned().map(|mut path| {
+            path.update_parents(&self.entity_keys().cloned().collect());
+            path
         })
     }
 
-    fn debug_roots(&self) -> String {
-        self.raw.display_root_ranges()
+    pub fn num_paths(&self) -> usize {
+        self.paths.len()
     }
 
-    #[pyo3(signature = (root=None, scope=None, **entities))]
-    fn get(
-        &self,
-        root: Option<PathList>,
-        scope: Option<ScopeList>,
-        entities: Option<HashMap<String, Py<PyAny>>>,
-    ) -> PyResult<Layout> {
-        Python::with_gil(|py| {
-            // Normalize entities
-            let entities = entities
-                .map(|entities| {
-                    entities
-                        .into_iter()
-                        .filter_map(|(entity, query)| {
-                            if query.is_none(py) {
-                                return None;
-                            }
-                            if let Ok(s) = map_query_terms(query.as_ref(py)) {
-                                Some(Ok((entity, vec![s])))
-                            } else {
-                                Some(match py_iter(query.as_ref(py)) {
-                                    Ok(iterator) => {
-                                        match iterator
-                                            .as_ref(py)
-                                            .map(|obj| map_query_terms(obj?))
-                                            .collect::<PyResult<Vec<_>>>()
-                                        {
-                                            Ok(terms) => Ok((entity, terms)),
-                                            Err(err) => Err(err),
-                                        }
-                                    }
-                                    Err(_) => match map_query_terms(query.as_ref(py)) {
-                                        Ok(term) => Ok((entity, vec![term])),
-                                        Err(err) => Err(err),
-                                    },
-                                })
-                            }
-                        })
-                        .collect::<PyResult<HashMap<String, Vec<QueryTerms>>>>()
-                })
-                .transpose()?;
-
-            // Normalize scope
-            let scopes = scope
-                .map(|scope| -> PyResult<_> {
-                    self.raw
-                        .get_scopes(scope.unpack()?)
-                        .map_err(|err| PyValueError::new_err(format!("{}", err)))
-                })
-                .transpose()?
-                .flatten()
-                .map(|scope| scope);
-
-            // Normalize Root
-            let mut root = root.map(|root| root.unpack()).transpose()?;
-            if let Some(scopes) = scopes {
-                if let Some(root) = &mut root {
-                    root.extend(scopes)
-                } else {
-                    root = Some(scopes)
-                }
-            }
-
-            match self.raw.query(entities, root) {
-                Ok(raw) => Ok(Layout { raw }),
-                Err(err) => Err(match err {
-                    QueryErr::MissingVal(..) | QueryErr::GlobErr(..) => PyValueError::new_err,
-                    QueryErr::MissingEntity(..) => PyKeyError::new_err,
-                }(format!("{}", err))),
-            }
-        })
+    pub fn len(&self) -> usize {
+        if let Some(idx) = self.view.get() {
+            idx.len()
+        } else {
+            self.num_paths()
+        }
     }
 
-    #[pyo3(signature = (root=None, scope=None, **entities))]
-    fn getone(
+    pub fn get_scopes(&self, scopes: Vec<String>) -> Result<Option<Vec<String>>, QueryErr> {
+        self.roots.get_scopes(scopes)
+    }
+
+    fn query_entity(
         &self,
-        root: Option<PathList>,
-        scope: Option<ScopeList>,
-        entities: Option<HashMap<String, Py<PyAny>>>,
-    ) -> PyResult<PyObject> {
-        let results = self.get(root, scope, entities)?;
-        if results.raw.len() == 0 {
-            Err(PyValueError::new_err("No items returned from query"))
-        } else if results.raw.len() > 1 {
-            let mut msg = String::from("Expected one path, but got:\n");
-            msg.push_str(&results.raw.fmt_elided_list(5));
-            let problem_entities: HashMap<_, _> = results
-                .raw
-                .entity_key_vals()
-                .into_iter()
-                .filter_map(|(key, val)| {
-                    if val.len() > 1 {
-                        Some((key, val))
-                    } else {
+        query: Vec<QueryTerms>,
+        entity: &String,
+        values: &HashMap<String, HashSet<usize>>,
+        new_entities: &mut HashMap<String, HashMap<String, HashSet<usize>>>,
+    ) -> Result<Option<HashSet<usize>>, QueryErr> {
+        let mut new_entity_vals = HashMap::new();
+        let mut has_true = false;
+        let mut has_false = false;
+        let mut queried: HashSet<_> = query
+            .into_iter()
+            .filter_map(|query| match query {
+                QueryTerms::Bool(boolean) => match boolean {
+                    true => {
+                        has_true = true;
                         None
                     }
-                })
-                .collect();
-            msg.push_str("\n\nThe following entities remain to be filtered:\n");
-            msg.push_str(&format!("{:#?}", problem_entities));
-            Err(PyValueError::new_err(msg))
-        } else {
-            Ok(to_pybidspath(results.raw.get_path(0).unwrap())?)
-        }
-    }
-
-    fn __getitem__(&self, i: usize) -> PyResult<PyObject> {
-        match self.raw.get_path(i).map(|path| to_pybidspath(path)) {
-            Some(path) => path,
-            None => Err(PyKeyError::new_err(format!("Index {} out of range", i))),
-        }
-    }
-
-    fn __len__(&self) -> usize {
-        self.raw.len()
-    }
-
-    fn __repr__(&self) -> String {
-        let mut repr = String::from(format!("<BidsLayout (len = {})>\n", self.raw.len()));
-        let interesting_entities = HashSet::from(["subject", "session", "run"]);
-        let entities = self.raw.entity_fullkey_vals();
-        let kept_entities = entities
+                    false => {
+                        has_false = true;
+                        None
+                    }
+                },
+                QueryTerms::String(string) => Some(string),
+            })
+            .collect();
+        let mut selection: HashSet<usize> = values
             .iter()
-            .filter_map(|(key, val)| {
-                if interesting_entities.contains(key as &str) {
-                    Some((key, val.len()))
+            .filter_map(|(label, indices)| {
+                if queried.remove(label) || has_true {
+                    new_entity_vals.insert(label.clone(), indices.clone());
+                    Some(indices)
                 } else {
                     None
                 }
             })
-            .collect::<HashMap<_, _>>();
-        repr.push_str("Entities:\n");
-        for (key, val) in &kept_entities {
-            repr.push_str(&format!("    {}: {}\n", key, val));
+            .fold(HashSet::new(), |set, next| &set | next);
+        if has_false {
+            let false_indices: HashSet<_> = self
+                .all_indices()
+                .difference(&self.all_entity_indices(&entity).unwrap())
+                .cloned()
+                .collect();
+            selection = &selection | &false_indices;
         }
-        repr.push_str(&format!(
-            "Other entities: {}\n",
-            entities
-                .keys()
-                .filter(|key| { !kept_entities.contains_key(key) })
-                .join(", ")
-        ));
-        repr.push_str(&self.raw.fmt_elided_list(10));
-        repr
+        new_entities.insert(entity.clone(), new_entity_vals);
+        if queried.len() > 0 {
+            Err(QueryErr::MissingVal(
+                entity.clone(),
+                queried.into_iter().collect(),
+            ))
+        } else {
+            Ok(Some(selection))
+        }
     }
 
-    fn __iter__(&self) -> LayoutIterator {
-        LayoutIterator {
-            iter: self.raw.get_paths(),
-        }
+    pub fn query(
+        &self,
+        query: Option<HashMap<String, Vec<QueryTerms>>>,
+        roots: Option<Vec<String>>,
+    ) -> Result<Layout, QueryErr> {
+        let mut new_entities = HashMap::new();
+        let queried = match query {
+            Some(query) => Some({
+                let mut query = normalize_query(query);
+                let selected = self
+                    .entities
+                    .iter()
+                    .map(|(entity, values)| match query.remove(entity) {
+                        Some(queried) => {
+                            self.query_entity(queried, entity, values, &mut new_entities)
+                        }
+                        None => {
+                            new_entities.insert(entity.clone(), values.clone());
+                            Ok(None)
+                        }
+                    })
+                    .collect::<Result<Vec<_>, _>>();
+
+                if query.len() > 0 {
+                    return Err(QueryErr::MissingEntity(query.keys().cloned().collect()));
+                }
+
+                selected?
+                    .into_iter()
+                    .flatten()
+                    .reduce(|set, next| &set & &next)
+                    .unwrap_or_else(|| HashSet::new())
+            }),
+            None => {
+                new_entities = self.entities.clone();
+                None
+            }
+        };
+
+        let roots = roots
+            .map(|roots| Ok(self.roots.glob_roots(roots).map_err(QueryErr::GlobErr)?))
+            .transpose()?;
+
+        let root_ranges = roots.as_ref().map(|roots| roots.full_range());
+
+        let selected = vec![root_ranges, queried]
+            .into_iter()
+            .flatten()
+            .reduce(|set, next| &set & &next);
+
+        let filtered_entities: HashMap<_, _> = if let Some(selected) = &selected {
+            new_entities
+                .into_iter()
+                .filter_map(|(entity, values)| {
+                    let filtered_values: HashMap<_, _> = values
+                        .into_iter()
+                        .filter_map(|(value, insts)| {
+                            let new = selected & &insts;
+                            if new.len() > 0 {
+                                Some((value, new))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if filtered_values.len() > 0 {
+                        Some((entity, filtered_values))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            new_entities
+        };
+
+        Ok(Layout {
+            paths: Arc::clone(&self.paths),
+            entities: filtered_entities,
+            roots: roots.unwrap_or_else(|| self.roots.clone()),
+            view: match selected {
+                Some(selected) => OnceCell::with_value(selected),
+                None => OnceCell::new(),
+            },
+        })
     }
 }

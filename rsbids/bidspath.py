@@ -19,13 +19,13 @@ class BidsPath(UserPath):
         _entities: dict[str, str] | None = None,
         _dataset_root: str | None = None,
     ):
-        if _entities is None and _dataset_root is None:
+        if _entities is None or _dataset_root is None:
             tpl = create_pybidspath(Path(*segments))
             _entities = tpl.entities
             _dataset_root = tpl.dataset_root
         super().__init__(self, *segments)
-        self.entities = _entities or {}
-        self.dataset_root = _dataset_root or ""
+        self.entities = _entities
+        self.dataset_root = _dataset_root
 
     def with_segments(self, *pathsegments: StrPath) -> Path:
         return Path(*pathsegments)

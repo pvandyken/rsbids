@@ -2,14 +2,14 @@ use std::path::PathBuf;
 
 use pyo3::{prelude::*, types::PyDict};
 
-use crate::bidspath::{BidsPath, BidsPathBuilder};
+use crate::layout::{bidspath::BidsPath, builders::bidspath_builder::BidsPathBuilder};
 
 pub fn to_pybidspath(path: BidsPath) -> PyResult<PyObject> {
     Python::with_gil(|py| {
         let bidspathcls = py.import("rsbids.bidspath")?.getattr("BidsPath")?;
         let kwargs = PyDict::new(py);
-        kwargs.set_item("entities", path.get_entities())?;
-        kwargs.set_item("dataset_root", path.get_root())?;
+        kwargs.set_item("_entities", path.get_entities())?;
+        kwargs.set_item("_dataset_root", path.get_root())?;
 
         bidspathcls
             .call((path.path,), Some(kwargs))
@@ -20,8 +20,8 @@ pub fn to_pybidspath(path: BidsPath) -> PyResult<PyObject> {
 #[pyfunction]
 pub fn create_pybidspath(path: PathBuf) -> PyResult<PyObject> {
     let builder = BidsPathBuilder::new(path.to_string_lossy().to_string(), 0);
-    match builder.via_spec() {
+    match builder.spec_parse(None) {
         Ok(bidspath) => to_pybidspath(bidspath),
-        Err(builder) => to_pybidspath(BidsPath::new(builder.path, builder.root)),
+        Err(builder) => to_pybidspath(builder.no_parse()),
     }
 }

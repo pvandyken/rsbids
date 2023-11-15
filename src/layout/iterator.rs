@@ -1,6 +1,7 @@
 use std::{collections::HashSet, ops::Range, sync::Arc};
 
-use crate::bidspath::BidsPath;
+use super::bidspath::BidsPath;
+
 
 pub struct BidsPathViewIterator {
     paths: Arc<Vec<BidsPath>>,

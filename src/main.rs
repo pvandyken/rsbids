@@ -4,7 +4,7 @@ use std::{
 };
 
 use itertools::Itertools;
-use rsbids::dataset::Dataset;
+use rsbids::layout::Layout;
 
 fn main() {
     let args: Vec<String> = env::args().dropping(1).collect();
@@ -12,5 +12,5 @@ fn main() {
         eprintln!("No arguments given!");
         exit(1)
     }
-    let _ = Dataset::create(args, None);
+    let _ = Layout::create(args, None, false);
 }

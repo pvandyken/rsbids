@@ -17,6 +17,8 @@ class Benchmark(Protocol):
     ) -> _T:
         ...
 
+def test_benchmark_validate(benchmark: Benchmark):
+    benchmark(BidsLayout, "topsy", validate=True)
 
 def test_benchmark_rsbids_indexing(benchmark: Benchmark):
     benchmark(BidsLayout, "topsy")

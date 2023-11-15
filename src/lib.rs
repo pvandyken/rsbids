@@ -1,22 +1,19 @@
-use crate::layout::Layout;
-use pybidspath::create_pybidspath;
+use crate::py::pybidspath::create_pybidspath;
+use crate::py::pylayout::PyLayout;
 use pyo3::prelude::*;
 
-pub mod bidspath;
-pub mod dataset;
-pub mod fs;
 pub mod layout;
+pub mod dataset_description;
+pub mod fs;
 pub mod primitives;
+pub mod py;
 pub mod standards;
 pub mod utils;
-pub mod dataset_description;
-pub mod pyparams;
-pub mod pybidspath;
 
 /// A Python module implemented in Rust.
 #[pymodule]
 fn rsbids(_py: Python, m: &PyModule) -> PyResult<()> {
-    m.add_class::<Layout>()?;
+    m.add_class::<PyLayout>()?;
     m.add_function(wrap_pyfunction!(create_pybidspath, m)?)?;
     Ok(())
 }
@@ -24,7 +21,7 @@ fn rsbids(_py: Python, m: &PyModule) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
 
-    use crate::dataset::Dataset;
+    use crate::layout::Layout;
 
     #[test]
     fn it_works() {
@@ -34,6 +31,6 @@ mod tests {
 
     #[test]
     fn main() {
-        let _ = Dataset::create(vec!["data".to_string()], None);
+        let _ = Layout::create(vec!["data".to_string()], None, false);
     }
 }
