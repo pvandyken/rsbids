@@ -16,6 +16,8 @@ build-backend = "maturin"
 [tool.maturin]
 features = ["pyo3/extension-module"]
 module-name = "rsbids._lib"
+python-source = "python"
+strip = "true"
 
 [tool.pdm.dev-dependencies]
 dev = [
