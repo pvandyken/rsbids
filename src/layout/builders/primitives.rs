@@ -1,11 +1,18 @@
 use std::{collections::HashSet, fmt, ops::Range};
 
 use itertools::Itertools;
+use serde::{Serialize, Deserialize};
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MultiRange<I> {
     ranges: Vec<Range<I>>,
+}
+
+impl<I> MultiRange<I> {
+    pub fn new() -> Self {
+        MultiRange { ranges: Vec::new() }
+    }
 }
 
 impl<I> From<Range<I>> for MultiRange<I> {
@@ -148,7 +155,7 @@ impl<I: fmt::Display> fmt::Display for MultiRange<I> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyVal {
     pub slice: Range<usize>,
     pub delimiter: usize,

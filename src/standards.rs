@@ -13,6 +13,10 @@ pub fn deref_key_alias(key: &str) -> Option<&str> {
      BIDS_ENTITIES.get_by_right(key).copied()
 }
 
+pub fn check_entity(entity: &str) -> bool {
+    BIDS_ENTITIES.contains_left(entity)
+}
+
 pub static BIDS_ENTITIES: Lazy<BiMap<&'static str, &'static str>> = Lazy::new(|| {
     {
         [

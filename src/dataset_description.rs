@@ -1,140 +1,96 @@
 use std::{
     collections::HashMap,
     fs::File,
-    io::{self, Read},
+    io::Read,
     iter,
-    path::Path,
+    path::{Path, PathBuf}, sync::Arc,
 };
 
-use json::{object::Object, JsonValue};
+use itertools::Itertools;
+use serde::{Deserialize, Serialize};
+use serde_with::{apply, serde_as};
 
-pub fn find_dataset_description(path: &Path) -> Option<&Path> {
-    for parent in path.ancestors() {
-        if parent.join("dataset_description.json").exists() {
-            return Some(path);
-        }
-    }
-    None
-}
+use crate::errors::DatasetDescriptionErr;
 
-pub enum DatasetDescriptionErr {
-    IoErr(io::Error),
-    JsonErr(json::JsonError),
-}
-
-#[derive(Debug, Default)]
+#[apply(
+    Option => #[serde_as(deserialize_as="serde_with::DefaultOnError")] #[serde(default)]
+)]
+#[serde_with::serde_as]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct GeneratedBy {
-    name: String,
-    version: Option<String>,
-    description: Option<String>,
-    code_url: Option<String>,
-    container: Option<String>,
+    #[serde(rename = "Name")]
+    pub name: String,
+    #[serde(rename = "Version")]
+    pub version: Option<String>,
+    #[serde(rename = "Description")]
+    pub description: Option<String>,
+    #[serde(rename = "CodeURL")]
+    pub code_url: Option<String>,
+    #[serde(rename = "container")]
+    pub container: Option<String>,
 }
-impl GeneratedBy {
-    fn parse_list(value: &Object) -> Option<Vec<Self>> {
-        Some(match value.get("GeneratedBy")? {
-            JsonValue::Array(arr) => arr
-                .iter()
-                .filter_map(|val| match val {
-                    JsonValue::Object(val) => Self::parse_one(val),
-                    _ => None,
-                })
-                .collect(),
-            _ => None?,
-        })
-    }
 
-    fn parse_one(val: &Object) -> Option<Self> {
-        Some(GeneratedBy {
-            name: extract_string("Name", val)?,
-            version: extract_string("Version", val),
-            description: extract_string("Description", val),
-            code_url: extract_string("CodeURL", val),
-            container: extract_string("Container", val),
-        })
-    }
-}
-#[derive(Debug, Default)]
+#[apply(
+    Option => #[serde_as(deserialize_as="serde_with::DefaultOnError")] #[serde(default)]
+)]
+#[serde_with::serde_as]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct SourceDataset {
-    uri: Option<String>,
-    doi: Option<String>,
-    version: Option<String>,
-}
-impl SourceDataset {
-    fn parse(value: &Object) -> Option<Vec<Self>> {
-        let result = GeneratedBy::default();
-        Some(match value.get("GeneratedBy")? {
-            JsonValue::Array(arr) => arr
-                .iter()
-                .filter_map(|val| match val {
-                    JsonValue::Object(val) => Some(Self {
-                        uri: extract_string("URI", val),
-                        doi: extract_string("DOI", val),
-                        version: extract_string("Version", val),
-                    }),
-                    _ => None,
-                })
-                .collect(),
-            _ => None?,
-        })
-    }
+    #[serde(rename = "URI")]
+    pub uri: Option<String>,
+    #[serde(rename = "DOI")]
+    pub doi: Option<String>,
+    #[serde(rename = "Version")]
+    pub version: Option<String>,
 }
 
-fn extract_string(key: &str, val: &Object) -> Option<String> {
-    Some(val.get(key)?.as_str()?.to_string())
-}
-
-fn extract_list(key: &str, val: &Object) -> Option<Vec<String>> {
-    Some(match val.get(key)? {
-        JsonValue::Array(obj) => obj
-            .iter()
-            .filter_map(|val| Some(val.as_str()?.to_string()))
-            .collect(),
-        _ => None?,
-    })
-}
-
-fn extract_map(key: &str, val: &Object) -> Option<HashMap<String, String>> {
-    let mut result = HashMap::new();
-    Some(match val.get(key)? {
-        JsonValue::Object(obj) => {
-            for (key, val) in obj.iter() {
-                if let Some(val) = val.as_str() {
-                    let key = key.to_string();
-                    let val = val.to_string();
-                    result.insert(key, val);
-                } else {
-                    continue;
-                }
-            }
-            result
-        }
-        _ => None?,
-    })
-}
-
-#[derive(Debug, Default)]
+#[apply(
+    Option => #[serde_as(deserialize_as="serde_with::DefaultOnError")] #[serde(default)]
+)]
+#[serde_with::serde_as]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct DatasetDescription {
+    // #[serde_as(deserialize_as="serde_with::DefaultOnError")]
+    #[serde(rename = "Name")]
     pub name: Option<String>,
+    #[serde(rename = "BidsVersion")]
     pub bids_version: Option<String>,
+    #[serde(rename = "HEDVersion")]
     pub hed_version: Option<Vec<String>>,
+    #[serde(rename = "DatasetLinks")]
     pub dataset_links: Option<HashMap<String, String>>,
+    #[serde(rename = "DatasetType")]
     pub dataset_type: Option<String>,
+    #[serde(rename = "License")]
     pub license: Option<String>,
+    // #[serde_as(deserialize_as="serde_with::DefaultOnError")]
+    #[serde(rename = "Authors")]
     pub authors: Option<Vec<String>>,
+    #[serde(rename = "Acknowledgments")]
     pub acknowledgements: Option<String>,
+    #[serde(rename = "HowToAcknowledge")]
     pub how_to_acknowledge: Option<String>,
+    #[serde(rename = "Funding")]
     pub funding: Option<Vec<String>>,
+    #[serde(rename = "EthicsApprovals")]
     pub ethics_approvals: Option<Vec<String>>,
+    #[serde(rename = "ReferencesAndLinks")]
     pub references_and_links: Option<Vec<String>>,
+    #[serde(rename = "DatasetDOI")]
     pub dataset_doi: Option<String>,
+    #[serde(rename = "GeneratedBy")]
     pub generated_by: Option<Vec<GeneratedBy>>,
+    #[serde(rename = "SourceDatasets")]
     pub source_datasets: Option<Vec<SourceDataset>>,
+    #[serde(rename = "PipelineDescription")]
     pub pipeline_description: Option<GeneratedBy>,
 }
 
 impl DatasetDescription {
     pub fn open(path: &Path) -> Result<DatasetDescription, DatasetDescriptionErr> {
+        if path.as_os_str().is_empty() {
+            return DatasetDescription::open(&PathBuf::from("dataset_description.json"));
+        }
         if path.is_dir() {
             return DatasetDescription::open(&path.join("dataset_description.json"));
         }
@@ -142,29 +98,7 @@ impl DatasetDescription {
         let mut contents = String::new();
         file.read_to_string(&mut contents)
             .map_err(DatasetDescriptionErr::IoErr)?;
-        Ok(
-            match json::parse(&contents).map_err(DatasetDescriptionErr::JsonErr)? {
-                JsonValue::Object(data) => DatasetDescription {
-                    name: extract_string("Name", &data),
-                    bids_version: extract_string("BIDSVersion", &data),
-                    hed_version: extract_list("HEDVersion", &data),
-                    dataset_links: extract_map("DatasetLinks", &data),
-                    dataset_type: extract_string("Name", &data),
-                    license: extract_string("License", &data),
-                    authors: extract_list("Authors", &data),
-                    acknowledgements: extract_string("Acknowledgements", &data),
-                    how_to_acknowledge: extract_string("HowToAcknowledge", &data),
-                    funding: extract_list("Funding", &data),
-                    ethics_approvals: extract_list("EthicsApprovals", &data),
-                    references_and_links: extract_list("ReferencesAndLinks", &data),
-                    dataset_doi: extract_string("DatasetDOI", &data),
-                    generated_by: GeneratedBy::parse_list(&data),
-                    source_datasets: SourceDataset::parse(&data),
-                    pipeline_description: GeneratedBy::parse_one(&data),
-                },
-                _ => DatasetDescription::default(),
-            },
-        )
+        serde_json::from_str(&contents).map_err(DatasetDescriptionErr::JsonErr)
     }
 
     pub fn pipeline_names(&self) -> impl Iterator<Item = &String> {
@@ -179,5 +113,147 @@ impl DatasetDescription {
         .into_iter()
         .flatten()
         .flatten()
+    }
+}
+
+impl TryFrom<String> for DatasetDescription {
+    type Error = DatasetDescriptionErr;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        serde_json::from_str(&value).map_err(DatasetDescriptionErr::JsonErr)
+    }
+}
+
+impl TryFrom<DatasetDescription> for String {
+    type Error = DatasetDescriptionErr;
+    fn try_from(value: DatasetDescription) -> Result<Self, Self::Error> {
+        serde_json::to_string(&value).map_err(DatasetDescriptionErr::JsonErr)
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+pub struct GeneratedByBin {
+    pub name: String,
+    pub version: Option<String>,
+    pub description: Option<String>,
+    pub code_url: Option<String>,
+    pub container: Option<String>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+pub struct SourceDatasetBin {
+    pub uri: Option<String>,
+    pub doi: Option<String>,
+    pub version: Option<String>,
+}
+
+/// DefaultOnError breaks bincode, so keep a seperate, simplified struct for encoding to bin
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+pub struct DatasetDescriptionBin {
+    pub name: Option<String>,
+    pub bids_version: Option<String>,
+    pub hed_version: Option<Vec<String>>,
+    pub dataset_links: Option<HashMap<String, String>>,
+    pub dataset_type: Option<String>,
+    pub license: Option<String>,
+    pub authors: Option<Vec<String>>,
+    pub acknowledgements: Option<String>,
+    pub how_to_acknowledge: Option<String>,
+    pub funding: Option<Vec<String>>,
+    pub ethics_approvals: Option<Vec<String>>,
+    pub references_and_links: Option<Vec<String>>,
+    pub dataset_doi: Option<String>,
+    pub generated_by: Option<Vec<GeneratedByBin>>,
+    pub source_datasets: Option<Vec<SourceDatasetBin>>,
+    pub pipeline_description: Option<GeneratedByBin>,
+}
+
+impl From<Arc<DatasetDescription>> for DatasetDescriptionBin {
+    fn from(value: Arc<DatasetDescription>) -> Self {
+        let value = value.as_ref().clone();
+        Self {
+            name: value.name,
+            bids_version: value.bids_version,
+            hed_version: value.hed_version,
+            dataset_links: value.dataset_links,
+            dataset_type: value.dataset_type,
+            license: value.license,
+            authors: value.authors,
+            acknowledgements: value.acknowledgements,
+            how_to_acknowledge: value.how_to_acknowledge,
+            funding: value.funding,
+            ethics_approvals: value.ethics_approvals,
+            references_and_links: value.references_and_links,
+            dataset_doi: value.dataset_doi,
+            generated_by: value.generated_by.map(|s| s.into_iter().map_into().collect()),
+            source_datasets: value.source_datasets.map(|s| s.into_iter().map_into().collect()),
+            pipeline_description: value.pipeline_description.map(|s| s.into()),
+        }
+    }
+}
+
+impl From<DatasetDescriptionBin> for Arc<DatasetDescription> {
+    fn from(value: DatasetDescriptionBin) -> Self {
+        Arc::new(DatasetDescription {
+            name: value.name,
+            bids_version: value.bids_version,
+            hed_version: value.hed_version,
+            dataset_links: value.dataset_links,
+            dataset_type: value.dataset_type,
+            license: value.license,
+            authors: value.authors,
+            acknowledgements: value.acknowledgements,
+            how_to_acknowledge: value.how_to_acknowledge,
+            funding: value.funding,
+            ethics_approvals: value.ethics_approvals,
+            references_and_links: value.references_and_links,
+            dataset_doi: value.dataset_doi,
+            generated_by: value.generated_by.map(|s| s.into_iter().map_into().collect()),
+            source_datasets: value.source_datasets.map(|s| s.into_iter().map_into().collect()),
+            pipeline_description: value.pipeline_description.map(|s| s.into()),
+        })
+    }
+}
+
+impl From<SourceDataset> for SourceDatasetBin {
+    fn from(value: SourceDataset) -> Self {
+        Self {
+            uri: value.uri,
+            doi: value.doi,
+            version: value.version
+        }
+    }
+}
+
+impl From<SourceDatasetBin> for SourceDataset {
+    fn from(value: SourceDatasetBin) -> Self {
+        Self {
+            uri: value.uri,
+            doi: value.doi,
+            version: value.version
+        }
+    }
+}
+
+impl From<GeneratedBy> for GeneratedByBin {
+    fn from(value: GeneratedBy) -> Self {
+        Self {
+            name: value.name,
+            version: value.version,
+            description: value.description,
+            code_url: value.code_url,
+            container: value.container,
+        }
+    }
+}
+
+impl From<GeneratedByBin> for GeneratedBy {
+    fn from(value: GeneratedByBin) -> Self {
+        Self {
+            name: value.name,
+            version: value.version,
+            description: value.description,
+            code_url: value.code_url,
+            container: value.container,
+        }
     }
 }

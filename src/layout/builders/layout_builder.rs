@@ -1,43 +1,78 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
+    ffi::OsString,
     mem,
     ops::Range,
-    path::{Path, PathBuf},
+    path::{Components, Path, PathBuf},
     sync::Arc,
 };
 
 use itertools::Itertools;
 use once_cell::sync::OnceCell;
+use serde::{Deserialize, Serialize};
 
 use crate::{
+    errors::BidsPathErr,
     layout::{
+        bidspath::{BidsPath, UnknownDatatype, UnknownDatatypeTypes},
         entity_table::EntityTable,
         roots::{DatasetRoot, RootCategory},
-        Layout, bidspath::{BidsPath, UnknownDatatypeTypes, UnknownDatatype},
+        Layout,
     },
-    dataset_description::find_dataset_description,
     standards::BIDS_ENTITIES,
+    utils::is_subpath_of,
 };
 
 use super::bidspath_builder::BidsPathBuilder;
 
-trait EntityTableExt {
-    fn insert_entity(&mut self, i: usize, entity: &str, value: &str);
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct FileTree {
+    nodes: HashMap<OsString, Box<FileTree>>,
+    files: HashSet<usize>,
 }
 
-impl EntityTableExt for EntityTable {
-    fn insert_entity(&mut self, i: usize, entity: &str, value: &str) {
-        if let Some(val_map) = self.get_mut(entity) {
-            if let Some(set) = val_map.get_mut(value) {
-                set.insert(i);
+impl FileTree {
+    pub fn insert(&mut self, mut path: Components, file: usize) {
+        if let Some(next) = path.next() {
+            let next = next.as_os_str();
+            let sub = self.nodes.entry(next.to_owned()).or_default();
+            sub.insert(path, file);
+        } else {
+            self.files.insert(file);
+        }
+    }
+
+    #[inline]
+    pub fn find(&self, path: &Path) -> Option<&FileTree> {
+        self.find_impl(path.components())
+    }
+
+    #[inline]
+    pub fn get_subfiles(&self, path: &Path) -> Option<HashSet<usize>> {
+        let tree = self.find(path)?;
+        let mut result = HashSet::new();
+        tree.get_subfiles_impl(&mut result);
+        Some(result)
+    }
+
+    fn find_impl(&self, mut path: Components) -> Option<&FileTree> {
+        if let Some(next) = path.next() {
+            let next = next.as_os_str();
+            if let Some(sub) = self.nodes.get(next) {
+                sub.find_impl(path)
             } else {
-                val_map.insert(value.to_string(), HashSet::from([i]));
+                None
             }
         } else {
-            let mut val_map = HashMap::new();
-            val_map.insert(value.to_string(), HashSet::from([i]));
-            self.insert(entity.to_string(), val_map);
+            Some(self)
         }
+    }
+
+    fn get_subfiles_impl(&self, result: &mut HashSet<usize>) {
+        for tree in self.nodes.values() {
+            tree.get_subfiles_impl(result);
+        }
+        result.extend(self.files.iter().cloned());
     }
 }
 
@@ -50,20 +85,23 @@ pub enum RootLabel {
 
 #[derive(Debug, Clone)]
 enum PartialRoot {
-    Raw(String, Range<usize>),
-    Derivative(String, Option<String>, Range<usize>),
+    Raw(PathBuf, Range<usize>),
+    Derivative(PathBuf, Option<String>, Range<usize>),
 }
+
 
 #[derive(Debug, Default, Clone)]
 pub struct LayoutBuilder {
     paths: Vec<BidsPath>,
-    pub(super) entities: EntityTable,
-    roots: HashMap<String, DatasetRoot>,
-    derivative_roots: HashMap<String, DatasetRoot>,
-    labelled_roots: HashMap<String, HashMap<String, DatasetRoot>>,
+    pub(super) entities: EntityTable<String>,
+    roots: HashMap<PathBuf, DatasetRoot>,
+    derivative_roots: HashMap<PathBuf, DatasetRoot>,
+    labelled_roots: HashMap<String, HashMap<PathBuf, DatasetRoot>>,
     pub(super) heads: HashMap<String, HashSet<usize>>,
+    pub(super) depths: BTreeMap<usize, HashSet<usize>>,
+    pub(super) filetree: FileTree,
     current_root: Option<PartialRoot>,
-    unknown_entities: EntityTable,
+    unknown_entities: EntityTable<String>,
     unknown_datatypes: HashSet<usize>,
 }
 
@@ -90,6 +128,15 @@ impl LayoutBuilder {
         }
     }
 
+    pub(super) fn add_depth(&mut self, depth: usize) {
+        let i = self.current_path();
+        if let Some(val) = self.depths.get_mut(&depth) {
+            val.insert(i);
+        } else {
+            self.depths.insert(depth, HashSet::from([i]));
+        }
+    }
+
     fn confirm_entity(&mut self, entity: &str) {
         if let Some((entity, value)) = self.unknown_entities.remove_entry(entity) {
             self.entities.insert(entity, value);
@@ -108,29 +155,28 @@ impl LayoutBuilder {
         self.unknown_datatypes.insert(self.current_path());
     }
 
-    pub fn register_root(&mut self, root: Option<&String>, label: RootLabel) -> Option<usize> {
+
+    fn merge_path(&mut self, path: &BidsPath) {
+        let i = self.current_path();
+        for (entity, vals) in path.get_entities() {
+            self.entities.insert_entity(i, entity, vals)
+        }
+        if let Some(uncertain_entities) = path.get_uncertain_entities() {
+            for (entity, vals) in uncertain_entities {
+                self.add_entity(&entity, vals);
+            }
+        }
+        if !path.uncertain_datatypes.is_none() {
+            self.add_uncertain_datatype()
+        }
+    }
+
+    pub fn register_root(&mut self, root: Option<&PathBuf>, label: RootLabel) -> Option<usize> {
+        // Paths here come from user input, so safe to use to_string_lossy throughout
         let (len, root) = root
-            .map(|path| {
-                let len = path.len();
-                let path = PathBuf::from(path);
-                if let Some(description_path) = find_dataset_description(&path) {
-                    let description_path = description_path.to_string_lossy();
-                    let len = description_path.len();
-                    Some((len, description_path.to_string()))
-                } else if path.is_file() {
-                    if let Some(rootpath) = path.parent() {
-                        let rootpath = rootpath.to_string_lossy();
-                        let len = rootpath.len();
-                        Some((len, rootpath.to_string()))
-                    } else {
-                        None
-                    }
-                } else {
-                    Some((len, path.to_string_lossy().to_string()))
-                }
-            })
+            .map(|r| BidsPathBuilder::locate_root(r))
             .flatten()
-            .map(|(len, path)| (Some(len), Some(path)))
+            .map(|(len, path)| (Some(len), Some(path.to_owned())))
             .unwrap_or((None, None));
 
         // Holding ground for new root, as we don't know the extent of it's range
@@ -143,6 +189,7 @@ impl LayoutBuilder {
             RootLabel::Raw => PartialRoot::Raw(root, new_range),
         });
         mem::swap(&mut self.current_root, &mut new_root);
+
 
         // Current position marks the end of the last root, so add it to official list
         let prev_root = new_root;
@@ -157,14 +204,14 @@ impl LayoutBuilder {
         len
     }
 
-    fn add_raw_root(&mut self, root: String, mut range: Range<usize>) {
+    fn add_raw_root(&mut self, root: PathBuf, mut range: Range<usize>) {
         range.end = self.paths.len();
         Self::insert_to_root_map(&mut self.roots, root, range);
     }
 
     fn add_derivative_root(
         &mut self,
-        root: String,
+        root: PathBuf,
         label: Option<String>,
         mut range: Range<usize>,
     ) {
@@ -184,8 +231,8 @@ impl LayoutBuilder {
     }
 
     fn insert_to_root_map(
-        map: &mut HashMap<String, DatasetRoot>,
-        key: String,
+        map: &mut HashMap<PathBuf, DatasetRoot>,
+        key: PathBuf,
         range: Range<usize>,
     ) {
         if let Some(entry) = map.get_mut(&key) {
@@ -196,13 +243,26 @@ impl LayoutBuilder {
         }
     }
 
-    pub fn add_path(&mut self, path: String, root: usize, with_spec: bool) -> Result<(), BidsPath> {
-        let builder = BidsPathBuilder::new(path, root);
+    pub fn add_path(
+        &mut self,
+        path: PathBuf,
+        root: usize,
+        with_spec: bool,
+    ) -> Result<(), BidsPathErr> {
+        let pathbuf = PathBuf::from(&path);
+        let mut pathcomps = pathbuf.components();
+        pathcomps.next_back();
+        let builder = BidsPathBuilder::new(path, root)?;
         let path = if with_spec {
-            builder.spec_parse(Some(self)).map_err(|builder| builder.no_parse())?
+            let path = builder.spec_parse()?;
+            self.merge_path(&path);
+            path
         } else {
             builder.generic_build_parse(self)
         };
+        self.filetree.insert(pathcomps, self.current_path());
+        self.add_head(&path.get_head());
+        self.add_depth(path.depth);
         self.paths.push(path);
         Ok(())
     }
@@ -277,25 +337,38 @@ impl LayoutBuilder {
             paths: Arc::new(self.paths),
             entities: self.entities,
             roots: roots.into(),
+            heads: self.heads,
+            filetree: Arc::new(self.filetree),
+            depths: Arc::new(self.depths),
+            metadata: OnceCell::new(),
             view: OnceCell::new(),
         }
     }
 
     fn normalize_roots(
         heads: &Vec<String>,
-        roots: HashMap<String, DatasetRoot>,
-    ) -> HashMap<String, DatasetRoot> {
-        let mut result: HashMap<String, DatasetRoot> = HashMap::new();
+        roots: HashMap<PathBuf, DatasetRoot>,
+    ) -> HashMap<PathBuf, DatasetRoot> {
+        let mut result: HashMap<PathBuf, DatasetRoot> = HashMap::new();
         for (root, data) in roots {
-            match heads
-                .iter()
-                .find(|&head| root.starts_with(head) && root.len() > head.len())
-            {
+            let mut longest_head: Option<&String> = None;
+            for head in heads {
+                if is_subpath_of(&PathBuf::from(&head), &root) {
+                    longest_head = None;
+                    break;
+                } else if is_subpath_of(&root, &PathBuf::from(&head))
+                    && head.len() > longest_head.map(|h| h.len()).unwrap_or(0)
+                {
+                    longest_head = Some(head)
+                }
+            }
+            match longest_head {
                 Some(head) => {
-                    if let Some(droot) = result.get_mut(head) {
+                    let head = PathBuf::from(head);
+                    if let Some(droot) = result.get_mut(&head) {
                         droot.extend(data.get_range());
                     } else {
-                        result.insert(head.to_string(), data.move_range().into());
+                        result.insert(head, data.move_range().into());
                     }
                 }
                 None => {
@@ -305,5 +378,4 @@ impl LayoutBuilder {
         }
         result
     }
-
 }

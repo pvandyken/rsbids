@@ -31,7 +31,7 @@ def test_benchmark_ancp_indexing(benchmark: Benchmark):
 def test_benchmark_pybids_indexing(benchmark: Benchmark):
     benchmark(bids.BIDSLayout, "topsy")
 
-def test_benchmark_bids2table_index(benchmark: Benchmark):
+def test_benchmark_bids2table_indexing(benchmark: Benchmark):
     benchmark(bids2table, "topsy")
 
 

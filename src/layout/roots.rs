@@ -1,24 +1,34 @@
 use std::{
     collections::{HashMap, HashSet},
+    mem::swap,
     ops::Range,
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
 use globset::{Glob, GlobSetBuilder};
 use itertools::Itertools;
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 
-use crate::dataset_description::DatasetDescription;
+use crate::{
+    dataset_description::{DatasetDescription, DatasetDescriptionBin},
+    errors::GlobErr,
+};
 
 use super::{builders::primitives::MultiRange, QueryErr};
 
-#[derive(Clone, Debug)]
+#[serde_as]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum RootType<I> {
-    DatasetRoot(Arc<DatasetDescription>, I),
+    DatasetRoot(
+        #[serde_as(as = "serde_with::FromInto<DatasetDescriptionBin>")] Arc<DatasetDescription>,
+        I,
+    ),
     SeedRoot(I),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DatasetRoot {
     roottype: RootType<MultiRange<usize>>,
 }
@@ -26,7 +36,9 @@ pub struct DatasetRoot {
 impl DatasetRoot {
     pub fn new_range(range: Range<usize>, desc_path: Option<&Path>) -> Self {
         let description = desc_path
-            .map(|p| DatasetDescription::open(p))
+            .map(|p| {
+                DatasetDescription::open(p)
+            })
             .transpose()
             // Ignoring opening errors for now
             .unwrap_or(None);
@@ -70,6 +82,13 @@ impl DatasetRoot {
             RootType::SeedRoot(ref mut ranges) => ranges.extend(i),
         }
     }
+
+    pub fn get_description(&self) -> Option<Arc<DatasetDescription>> {
+        match &self.roottype {
+            RootType::DatasetRoot(dd, _) => Some(Arc::clone(&dd)),
+            _ => None,
+        }
+    }
 }
 
 impl Into<HashSet<usize>> for &DatasetRoot {
@@ -89,20 +108,20 @@ impl From<MultiRange<usize>> for DatasetRoot {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum RootCategory {
     Raw(DatasetRoot),
     Derivative(DatasetRoot),
     Labelled(String, DatasetRoot),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct DatasetRoots {
-    roots: HashMap<String, RootCategory>,
+    roots: HashMap<PathBuf, RootCategory>,
 }
 
 impl DatasetRoots {
-    pub fn get_scopes(&self, scopes: Vec<String>) -> Result<Option<Vec<String>>, QueryErr> {
+    pub fn get_scopes(&self, scopes: Vec<String>) -> Result<Option<Vec<PathBuf>>, QueryErr> {
         let mut result = Vec::new();
         let mut errs = Vec::new();
         for scope in scopes {
@@ -112,25 +131,26 @@ impl DatasetRoots {
                 result.extend(self.derivative_keys())
             } else if scope == "all" {
                 return Ok(None);
-            } else if let Some(labelled) = self.get_by_label(&scope) {
+            } else if let Some(labelled) = self.find_by_label(&scope) {
                 result.extend(labelled);
-            } else if let Some(pipelines) = self.get_by_pipeline(&scope) {
+            } else if let Some(pipelines) = self.find_by_pipeline(&scope) {
                 result.extend(pipelines)
             } else {
                 errs.push(scope)
             }
         }
-        if errs.len() > 0 {
+        // Skip errors from missing scope for now
+        if false && errs.len() > 0 {
             Err(QueryErr::MissingVal(String::from("scope"), errs))
         } else {
             Ok(Some(result.iter_mut().map(|s| s.clone()).collect()))
         }
     }
-    pub fn keys(&self) -> impl Iterator<Item = &String> {
+    pub fn keys(&self) -> impl Iterator<Item = &PathBuf> {
         self.roots.keys()
     }
 
-    pub fn items(&self) -> impl Iterator<Item = (&String, &DatasetRoot)> {
+    pub fn items(&self) -> impl Iterator<Item = (&PathBuf, &DatasetRoot)> {
         self.roots.iter().map(|(root, data)| match data {
             RootCategory::Derivative(ranges)
             | RootCategory::Raw(ranges)
@@ -138,14 +158,14 @@ impl DatasetRoots {
         })
     }
 
-    pub fn raw_items(&self) -> impl Iterator<Item = (&String, &DatasetRoot)> {
+    pub fn raw_items(&self) -> impl Iterator<Item = (&PathBuf, &DatasetRoot)> {
         self.roots.iter().filter_map(|(root, data)| match data {
             RootCategory::Raw(ranges) => Some((root, ranges)),
             _ => None,
         })
     }
 
-    pub fn derivative_items(&self) -> impl Iterator<Item = (&String, &DatasetRoot)> {
+    pub fn derivative_items(&self) -> impl Iterator<Item = (&PathBuf, &DatasetRoot)> {
         self.roots.iter().filter_map(|(root, data)| match data {
             RootCategory::Derivative(ranges) | RootCategory::Labelled(_, ranges) => {
                 Some((root, ranges))
@@ -154,21 +174,43 @@ impl DatasetRoots {
         })
     }
 
-    pub fn raw_keys(&self) -> impl Iterator<Item = &String> {
+    pub fn raw_keys(&self) -> impl Iterator<Item = &PathBuf> {
         self.roots.iter().filter_map(|(root, data)| match data {
             RootCategory::Raw(..) => Some(root),
             _ => None,
         })
     }
 
-    pub fn derivative_keys(&self) -> impl Iterator<Item = &String> {
+    pub fn derivative_keys(&self) -> impl Iterator<Item = &PathBuf> {
         self.roots.iter().filter_map(|(root, data)| match data {
             RootCategory::Derivative(..) | RootCategory::Labelled(..) => Some(root),
             _ => None,
         })
     }
 
-    pub fn get_by_label<'a>(&'a self, query: &str) -> Option<Vec<&String>> {
+    pub fn set_category<F: Fn(DatasetRoot) -> RootCategory>(
+        &mut self,
+        root: &Path,
+        category: F,
+    ) -> Option<()> {
+        if let Some(root) = self.roots.get_mut(root) {
+            let mut placeholder = RootCategory::Raw(DatasetRoot {
+                roottype: RootType::SeedRoot(MultiRange::new()),
+            });
+            swap(root, &mut placeholder);
+            placeholder = match placeholder {
+                RootCategory::Raw(r)
+                | RootCategory::Derivative(r)
+                | RootCategory::Labelled(_, r) => category(r),
+            };
+            swap(root, &mut placeholder);
+            Some(())
+        } else {
+            None
+        }
+    }
+
+    pub fn find_by_label<'a>(&'a self, query: &str) -> Option<Vec<&PathBuf>> {
         let result = self
             .roots
             .iter()
@@ -190,7 +232,7 @@ impl DatasetRoots {
         }
     }
 
-    pub fn get_by_pipeline<'a>(&'a self, query: &String) -> Option<Vec<&String>> {
+    pub fn find_by_pipeline<'a>(&'a self, query: &String) -> Option<Vec<&PathBuf>> {
         let result = self
             .roots
             .iter()
@@ -224,14 +266,17 @@ impl DatasetRoots {
         })
     }
 
-    pub fn full_range(&self) -> HashSet<usize> {
+    /// Return indices of all paths corresponding to roots
+    ///
+    /// If no roots, returns an empty set
+    pub fn into_set(&self) -> HashSet<usize> {
         self.ranges()
             .map_into()
-            .reduce(|set, next| &set | &next)
-            .unwrap_or(HashSet::new())
+            .fold(HashSet::new(), |set, next| &set | &next)
     }
 
-    pub fn glob_roots(&self, roots: Vec<String>) -> Result<Self, globset::Error> {
+    /// Return a new DatasetRoots with only roots matching the given glob patterns
+    pub fn glob_roots(&self, roots: Vec<PathBuf>) -> Result<Self, GlobErr> {
         let mut builder = GlobSetBuilder::new();
         let mut exact = HashSet::new();
 
@@ -240,7 +285,11 @@ impl DatasetRoots {
             if self.roots.contains_key(&root) {
                 exact.insert(root);
             } else {
-                builder.add(Glob::new(&root)?);
+                builder.add(Glob::new(
+                    &root
+                        .to_str()
+                        .ok_or_else(|| GlobErr::Encoding(root.clone()))?,
+                )?);
             }
         }
         let glob = builder.build()?;
@@ -277,14 +326,14 @@ impl DatasetRoots {
     }
 }
 
-impl From<HashMap<String, RootCategory>> for DatasetRoots {
-    fn from(value: HashMap<String, RootCategory>) -> Self {
+impl From<HashMap<PathBuf, RootCategory>> for DatasetRoots {
+    fn from(value: HashMap<PathBuf, RootCategory>) -> Self {
         Self { roots: value }
     }
 }
 
-impl FromIterator<(String, RootCategory)> for DatasetRoots {
-    fn from_iter<T: IntoIterator<Item = (String, RootCategory)>>(iter: T) -> Self {
+impl FromIterator<(PathBuf, RootCategory)> for DatasetRoots {
+    fn from_iter<T: IntoIterator<Item = (PathBuf, RootCategory)>>(iter: T) -> Self {
         Self {
             roots: iter.into_iter().collect(),
         }

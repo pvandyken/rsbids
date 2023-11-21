@@ -1,17 +1,22 @@
 use crate::{
     layout::{
+        bidspath::{BidsPath, UnknownDatatype, UnknownDatatypeTypes},
         builders::{
             bidspath_builder::{BidsPathBuilder, BidsPathPart, Name},
-            LayoutBuilder, primitives::ComponentType,
+            primitives::ComponentType,
+            LayoutBuilder,
         },
         check_datatype,
-        entity_table::EntityTable, bidspath::{BidsPath, UnknownDatatypeTypes, UnknownDatatype},
+        entity_table::EntityTable,
     },
-     standards::BIDS_ENTITIES,
+    standards::BIDS_ENTITIES,
 };
 
 impl BidsPathBuilder {
-    pub fn generic_build_parse(self, ds_builder: &mut LayoutBuilder) -> BidsPath {
+    pub fn generic_build_parse(
+        self,
+        ds_builder: &mut LayoutBuilder,
+    ) -> BidsPath {
         let is_twotype: Vec<bool> = self
             .components
             .iter()
@@ -33,17 +38,21 @@ impl BidsPathBuilder {
             labelled.push(Self::label_component_type(
                 labelled.last().unwrap_or(&BidsPathPart::Head(0)),
                 comp,
-                &self.path,
+                &self.path.as_str(),
                 next_is_twotype,
                 &ds_builder.entities,
             ));
         }
-        Self::collect_elements(ds_builder, BidsPath::new(self.path, self.root), labelled)
+        Self::collect_elements(
+            ds_builder,
+            BidsPath::new(self.path, self.root, self.depth),
+            labelled,
+        )
 
         // (BidsPath::new(self.path, self.root), labelled)
     }
 
-    fn check_entity(entity: &str, known_entities: &EntityTable) -> bool {
+    fn check_entity(entity: &str, known_entities: &EntityTable<String>) -> bool {
         known_entities.contains_key(entity) || BIDS_ENTITIES.contains_left(entity)
     }
     fn label_component_type<'b>(
@@ -51,7 +60,7 @@ impl BidsPathBuilder {
         comp: ComponentType,
         template: &str,
         next_is_twotype: bool,
-        known_entities: &EntityTable,
+        known_entities: &EntityTable<String>,
     ) -> BidsPathPart {
         match comp {
             ComponentType::TwoType(elems) => BidsPathPart::Name(Name::from_twotype(elems)),
@@ -116,12 +125,12 @@ impl BidsPathBuilder {
                     }
                 }
                 BidsPathPart::Parent(keyval) => {
-                    let (key, value) = keyval.get(&path.path);
+                    let (key, value) = keyval.get(&path.as_str());
                     ds_builder.add_and_confirm_entity(key, value);
                     path.parents.push(keyval)
                 }
                 BidsPathPart::UncertainParent(keyval) => {
-                    let (key, value) = keyval.get(&path.path);
+                    let (key, value) = keyval.get(&path.as_str());
                     ds_builder.add_entity(key, value);
                     path.add_uncertain_parent(keyval)
                 }
@@ -148,7 +157,7 @@ impl BidsPathBuilder {
                                 ds_builder.add_entity("extension", &path[&extension]);
                                 path.extension = Some(extension);
                             }
-                            let (key, value) = keyval.get(&path.path);
+                            let (key, value) = keyval.get(&path.as_str());
                             ds_builder.add_and_confirm_entity(key, value);
                             path.entities.push(keyval);
                         }
@@ -157,7 +166,7 @@ impl BidsPathBuilder {
                     }
                     if let Some(entities) = name.entities {
                         for entity in entities {
-                            let (key, value) = entity.get(&path.path);
+                            let (key, value) = entity.get(&path.as_str());
                             ds_builder.add_and_confirm_entity(key, value);
                             path.entities.push(entity);
                         }
@@ -169,7 +178,6 @@ impl BidsPathBuilder {
                 }
             }
         }
-        ds_builder.add_head(path.get_head());
         path
     }
 }

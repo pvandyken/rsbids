@@ -2,7 +2,6 @@ use std::{collections::HashSet, ops::Range, sync::Arc};
 
 use super::bidspath::BidsPath;
 
-
 pub struct BidsPathViewIterator {
     paths: Arc<Vec<BidsPath>>,
     valid_entities: HashSet<String>,
@@ -13,7 +12,7 @@ impl<'a> BidsPathViewIterator {
     pub fn new(
         paths: Arc<Vec<BidsPath>>,
         entities: HashSet<String>,
-        indices: Option<HashSet<usize>>,
+        indices: Option<Vec<usize>>,
     ) -> BidsPathViewIterator {
         let len = paths.len();
         BidsPathViewIterator {

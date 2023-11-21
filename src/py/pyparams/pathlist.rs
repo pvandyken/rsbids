@@ -1,10 +1,9 @@
 use std::path::PathBuf;
 
-use itertools::Itertools;
-use pyo3::{FromPyObject, PyAny, PyResult, Python};
+use pyo3::{FromPyObject,  PyResult, PyErr};
 
+use crate::pyiterable;
 
-use super::{iterable::IterableParam, pyiterable::PyIterable};
 
 #[derive(FromPyObject)]
 pub enum LayoutRootPrimitive {
@@ -12,28 +11,16 @@ pub enum LayoutRootPrimitive {
     Path(PathBuf),
 }
 
-impl Into<String> for LayoutRootPrimitive {
-    fn into(self) -> String {
-        match self {
-            LayoutRootPrimitive::Path(path) => path.to_string_lossy().to_string(),
-            LayoutRootPrimitive::String(string) => string,
+impl From<LayoutRootPrimitive> for PathBuf {
+    fn from(value: LayoutRootPrimitive) -> Self {
+        match value {
+            LayoutRootPrimitive::Path(path) => path,
+            LayoutRootPrimitive::String(string) => PathBuf::from(string),
         }
     }
 }
 
-#[derive(FromPyObject)]
-pub enum GenericPathParamTypes<'a> {
-    Regular(IterableParam<'a, LayoutRootPrimitive>),
-    Irregular(PyIterable<LayoutRootPrimitive>),
-}
-
-impl<'a> FromPyObject<'a> for PyIterable<LayoutRootPrimitive> {
-    fn extract(ob: &'a PyAny) -> PyResult<Self> {
-        Ok(Self {
-            data: Python::with_gil(|py| Self::collect(py, ob))?,
-        })
-    }
-}
+pyiterable!(GenericPathParamTypes<LayoutRootPrimitive>);
 
 #[derive(FromPyObject)]
 #[pyo3(transparent)]
@@ -42,10 +29,15 @@ pub struct PathList<'a> {
 }
 
 impl PathList<'_> {
-    pub fn unpack(self) -> PyResult<Vec<String>> {
-        Ok(match self.param {
-            GenericPathParamTypes::Regular(prim) => prim.try_into()?,
-            GenericPathParamTypes::Irregular(paths) => paths.data.into_iter().map_into().collect(),
-        })
+    pub fn unpack(self) -> PyResult<Vec<PathBuf>> {
+        self.try_into()
+    }
+}
+
+impl<'a> TryFrom<PathList<'a>> for Vec<PathBuf> {
+    type Error = PyErr;
+    fn try_from(value: PathList<'a>) -> Result<Self, Self::Error> {
+        value.param.try_into()
+        
     }
 }

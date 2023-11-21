@@ -1,9 +1,15 @@
 use std::{
     ops::Range,
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
 };
 
-use crate::layout::bidspath::{BidsPath, UnknownDatatypeTypes};
+use crate::{
+    errors::BidsPathErr,
+    layout::{
+        bidspath::{BidsPath, UnknownDatatypeTypes},
+        utfpath::UtfPath,
+    },
+};
 
 use super::primitives::{ComponentType, Elements, KeyVal, PrePrimitive, Primitive};
 
@@ -85,11 +91,10 @@ pub fn classify_component<'a>(mut elements: Vec<Elements>) -> ComponentType {
     }
 }
 
-pub fn get_components(path: &str) -> Vec<Range<usize>> {
-    // let path = Path::new(&path);
+pub fn get_components(path: &Path) -> Vec<Range<usize>> {
     let mut components = Vec::new();
     let mut curr_i = 0;
-    for component in Path::new(&path).components() {
+    for component in path.components() {
         let incr = match component {
             Component::Normal(comp) => {
                 let incr = comp.len();
@@ -131,9 +136,14 @@ pub fn group_primitives(mut data: Vec<Primitive>) -> Vec<Elements> {
         let mut finish = false;
         let grouped = match last {
             Primitive::Key(start, end) => consume_values(&mut data, start, end),
-            Primitive::Suffix(start, _end) => {
+            Primitive::Suffix(start, end) => {
                 finish = true;
-                Elements::Suffix(start.._end)
+                let end = if let Some(Primitive::Suffix(_, e)) = data.first() {
+                    *e
+                } else {
+                    end
+                };
+                Elements::Suffix(start..end)
             }
             Primitive::Part(start, end) => Elements::Part(start..end),
             Primitive::Value(..) => {
@@ -193,28 +203,70 @@ impl Name {
 
 #[derive(Debug)]
 pub struct BidsPathBuilder {
-    pub path: String,
+    pub path: UtfPath,
     pub components: Vec<ComponentType>,
+    pub depth: usize,
     pub root: usize,
 }
 
 impl BidsPathBuilder {
-    pub fn new(path: String, root: usize) -> Self {
-        let components = get_components(&path);
+    pub fn new(path: PathBuf, root: usize) -> Result<Self, BidsPathErr> {
+        let path = UtfPath::try_from(path)?;
+        let components = get_components(path.as_path());
         let mut comps = Vec::new();
         for component in components {
-            let elements = parse_path_segment(component, &path);
+            let elements = parse_path_segment(component, path.as_str());
             let elements = group_primitives(elements);
             comps.push(classify_component(elements));
         }
-        Self {
+        Ok(Self {
             path,
+            depth: comps.len(),
             components: comps,
             root,
+        })
+    }
+
+    pub fn locate_root(path: &Path) -> Option<(usize, &Path)> {
+        let len = path.to_string_lossy().len();
+        if let Some(description_path) = Self::find_dataset_description(&path) {
+            let len = description_path.to_string_lossy().len();
+            dbg!(&description_path);
+            Some((len, description_path))
+        } else if path.is_file() {
+            if let Some(rootpath) = path.parent() {
+                let len = rootpath.to_string_lossy().len();
+                Some((len, rootpath))
+            } else {
+                None
+            }
+        } else {
+            Some((len, path))
         }
     }
 
+    fn find_dataset_description(path: &Path) -> Option<&Path> {
+        for parent in path.ancestors() {
+            dbg!(&parent);
+            if parent.join("dataset_description.json").exists() {
+                return Some(parent);
+            }
+        }
+        None
+    }
+
     pub fn no_parse(self) -> BidsPath {
-        BidsPath::new(self.path, self.root)
+        BidsPath::new(self.path, self.root, self.depth)
+    }
+}
+
+impl From<BidsPath> for BidsPathBuilder {
+    fn from(value: BidsPath) -> Self {
+        Self {
+            path: value.path,
+            components: Vec::new(),
+            depth: value.depth,
+            root: value.root,
+        }
     }
 }

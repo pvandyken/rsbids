@@ -1,6 +1,6 @@
 from __future__ import annotations
-from pathlib import Path, PurePath, _PathParents
-import functools as ft
+from pathlib import Path, PurePath
+from pathlib import _PathParents  # type: ignore
 import sys
 from typing import TYPE_CHECKING, Any, Generator, Self, Sequence
 
@@ -28,9 +28,12 @@ class UserPathImpl(type(Path())):
 
     @property
     def parents(self) -> Sequence[Self]:
-        class _UserPathParents(_PathParents):
-            def __getitem__(self_, idx: int):
-                return self.with_segments(super().__getitem__(idx))
+        class _UserPathParents(_PathParents):  # type: ignore
+            def __getitem__(self_, idx: int):  # type: ignore
+                elem = super().__getitem__(idx)  # type: ignore
+                if isinstance(elem, tuple):
+                    return tuple(self.with_segments(p) for p in elem)  # type: ignore
+                return self.with_segments(elem)  # type: ignore
 
         return _UserPathParents(self)
 
@@ -76,6 +79,9 @@ class UserPathImpl(type(Path())):
 
     def expanduser(self) -> Self:
         return self.with_segments(Path(self).expanduser())
+
+    def relative_to(self, *other: StrPath) -> Self:
+        return self.with_segments(Path(self).relative_to(*other))
 
 
 if sys.version_info >= (3, 12):

@@ -1,0 +1,2 @@
+class CompatibilityError(Exception):
+    pass

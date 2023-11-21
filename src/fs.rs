@@ -1,8 +1,15 @@
-use std::{ffi::OsStr, fmt::Display, io, path::PathBuf};
+use std::{
+    collections::HashSet,
+    ffi::{OsStr, OsString},
+    io,
+    path::PathBuf,
+};
 
 use futures_lite::{future::block_on, StreamExt};
-use pyo3::{PyErr, Python};
+use pyo3::Python;
 use walkdir::WalkDir;
+
+use crate::errors::IterdirErr;
 
 fn unicode_decode_err(os_string: &OsStr) -> io::Error {
     io::Error::new(
@@ -14,44 +21,40 @@ fn unicode_decode_err(os_string: &OsStr) -> io::Error {
     )
 }
 
-pub enum IterdirErr {
-    Io(io::Error),
-    Interrupt(PyErr),
+pub struct IterIgnore {
+    pub paths: HashSet<PathBuf>,
+    pub names: HashSet<OsString>,
 }
 
-impl Display for IterdirErr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Interrupt(err) => f.write_fmt(format_args!("{}", err)),
-            Self::Io(err) => f.write_fmt(format_args!("{}", err)),
+impl IterIgnore {
+    pub fn new() -> Self {
+        Self {
+            paths: HashSet::new(),
+            names: HashSet::new(),
         }
     }
 }
 
-pub fn iterdir<F: FnMut(String)>(path: PathBuf, mut callback: F) -> Result<(), IterdirErr> {
+pub fn iterdir<F: FnMut(PathBuf)>(
+    path: PathBuf,
+    ignore: &IterIgnore,
+    mut callback: F,
+) -> Result<(), IterdirErr> {
     Python::with_gil(|py| {
         if path.is_file() {
-            return Ok(callback(
-                path.into_os_string()
-                    .into_string()
-                    .map_err(|e| IterdirErr::Io(unicode_decode_err(&e)))?,
-            ));
+            return Ok(callback(path));
         } else if path.exists() {
             WalkDir::new(&path)
                 .into_iter()
                 .filter_entry(|entry| {
-                    if let Some(true) = entry.path().file_name().map(|f| {
-                        let path = f.to_string_lossy();
-                        path == "dataset_description.json"
-                            || path.starts_with(".")
-                            || path == "derivatives"
+                    if entry.path() == path {
+                        true
+                    } else if let Some(true) = entry.path().file_name().map(|f| {
+                        ignore.names.contains(f)
+                            || f.to_str().map(|s| s.starts_with('.')).unwrap_or(false)
                     }) {
                         false
-                    } else if let Some(true) = entry
-                        .path()
-                        .file_name()
-                        .map(|f| f.to_string_lossy().starts_with('.'))
-                    {
+                    } else if ignore.paths.contains(entry.path()) {
                         false
                     } else {
                         true
@@ -60,14 +63,7 @@ pub fn iterdir<F: FnMut(String)>(path: PathBuf, mut callback: F) -> Result<(), I
                 .map(|entry| match entry {
                     Ok(entry) => {
                         if !entry.path().is_dir() {
-                            match entry.path().to_str() {
-                                Some(path) => callback(path.to_string()),
-                                None => {
-                                    return Err(IterdirErr::Io(unicode_decode_err(
-                                        entry.path().as_os_str(),
-                                    )))
-                                }
-                            };
+                            callback(entry.into_path());
                         };
                         Ok(())
                     }

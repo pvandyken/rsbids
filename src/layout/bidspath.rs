@@ -1,15 +1,21 @@
 use std::{
     collections::{HashMap, HashSet},
+    fs::File,
+    io::Read,
     ops::Range,
+    path::Path,
 };
 
 use itertools::chain;
+use serde::{Deserialize, Serialize};
 
-use crate::standards::get_key_alias;
+use crate::{errors::MetadataReadErr, standards::get_key_alias};
 
-use super::builders::primitives::KeyVal;
+use super::{builders::primitives::KeyVal, utfpath::UtfPath};
 
-#[derive(Debug, Clone)]
+pub type MetadataReadResult = Result<HashMap<String, String>, MetadataReadErr>;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnknownDatatype {
     pub value: Range<usize>,
     pub is_valid: bool,
@@ -24,15 +30,15 @@ impl UnknownDatatype {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum UnknownDatatypeTypes {
     Linked(String, UnknownDatatype),
     Unlinked(UnknownDatatype),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BidsPath {
-    pub path: String,
+    pub path: UtfPath,
     pub entities: Vec<KeyVal>,
     pub parts: Option<Vec<Range<usize>>>,
     pub suffix: Option<Range<usize>>,
@@ -41,14 +47,16 @@ pub struct BidsPath {
     pub parents: Vec<KeyVal>,
     pub head: usize,
     pub root: usize,
+    pub depth: usize,
     pub uncertain_parents: Option<Vec<KeyVal>>,
     pub uncertain_datatypes: Option<Vec<UnknownDatatypeTypes>>,
 }
 
 impl BidsPath {
-    pub fn new(path: String, root: usize) -> BidsPath {
+    pub fn new(path: UtfPath, root: usize, depth: usize) -> BidsPath {
         BidsPath {
-            path: path,
+            path,
+            depth,
             head: 0,
             entities: vec![],
             parts: None,
@@ -56,10 +64,23 @@ impl BidsPath {
             extension: None,
             datatype: None,
             parents: vec![],
-            root: root,
+            root,
             uncertain_parents: None,
             uncertain_datatypes: None,
         }
+    }
+
+    /// Return a borrowed Pathbuf view of path
+    pub fn as_path(&self) -> &Path {
+        self.path.as_path()
+    }
+    /// Return a str view of the path.
+    ///
+    /// Panics if path cannot be converted because it is not valid unicode. This function
+    /// assumes non-unicode paths have already been appropriately handled during BidsPath
+    /// construction
+    pub fn as_str(&self) -> &str {
+        &self.path.as_str()
     }
 
     pub fn add_uncertain_parent(&mut self, keyval: KeyVal) {
@@ -74,8 +95,10 @@ impl BidsPath {
         if self.uncertain_parents.is_none() {
             return None;
         }
-        for parent in self.uncertain_parents.as_mut()?.drain(..) {
-            let key = parent.get_key(&self.path);
+        let mut uncertain_parents = None;
+        std::mem::swap(&mut self.uncertain_parents, &mut uncertain_parents);
+        for parent in uncertain_parents.as_mut()?.drain(..) {
+            let key = parent.get_key(self.as_str());
             if parents.contains(key) {
                 self.parents.push(parent)
             }
@@ -84,30 +107,61 @@ impl BidsPath {
         Some(())
     }
 
-    pub fn get_entities(&self) -> HashMap<&str, &str> {
+    pub fn get_full_entities(&self) -> HashMap<&str, &str> {
         let mut entities = HashMap::new();
         for parent in chain![&self.parents, &self.entities] {
-            let (key, val) = parent.get(&self.path);
+            let (key, val) = parent.get(&self.as_str());
             entities.insert(get_key_alias(key), val);
         }
         if let Some(datatype) = &self.datatype {
-            entities.insert("datatype", &self.path[datatype.clone()]);
+            entities.insert("datatype", &self.as_str()[datatype.clone()]);
         }
         if let Some(suffix) = &self.suffix {
-            entities.insert("suffix", &self.path[suffix.clone()]);
+            entities.insert("suffix", &self.as_str()[suffix.clone()]);
         }
         if let Some(extension) = &self.extension {
-            entities.insert("extension", &self.path[extension.clone()]);
+            entities.insert("extension", &self.as_str()[extension.clone()]);
         }
         entities
     }
 
+    pub fn get_entities(&self) -> HashMap<&str, &str> {
+        let mut entities = HashMap::new();
+        for parent in chain![&self.parents, &self.entities] {
+            let (key, val) = parent.get(&self.as_str());
+            entities.insert(key, val);
+        }
+        if let Some(datatype) = &self.datatype {
+            entities.insert("datatype", &self.as_str()[datatype.clone()]);
+        }
+        if let Some(suffix) = &self.suffix {
+            entities.insert("suffix", &self.as_str()[suffix.clone()]);
+        }
+        if let Some(extension) = &self.extension {
+            entities.insert("extension", &self.as_str()[extension.clone()]);
+        }
+        entities
+    }
+
+    pub fn get_uncertain_entities(&self) -> Option<HashMap<&str, &str>> {
+        if let Some(uncertain_parents) = self.uncertain_parents.as_ref() {
+            let mut entities = HashMap::new();
+            for parent in uncertain_parents {
+                let (key, val) = parent.get(&self.as_str());
+                entities.insert(key, val);
+            }
+            Some(entities)
+        } else {
+            None
+        }
+    }
+
     pub fn get_root(&self) -> &str {
-        &self.path[..self.root]
+        &self.as_str()[..self.root]
     }
 
     pub fn get_head(&self) -> &str {
-        &self.path[..self.head]
+        &self.as_str()[..self.head]
     }
 
     pub fn push_uncertain_datatype(&mut self, datatype: UnknownDatatypeTypes) {
@@ -137,26 +191,38 @@ impl BidsPath {
     /// Modifies the provided range to cover just the suffix. Returns range for extension,
     /// if found
     pub fn extract_extension(&self, range: &mut Range<usize>) -> Option<Range<usize>> {
-        self.path[range.clone()].find('.').and_then(|i| {
+        self.as_str()[range.clone()].find('.').and_then(|i| {
             let end = range.end;
             range.end = range.start + i;
             Some(range.start + i..end)
         })
     }
 
-    // pub cleanup_uncertain_datatypes()
+    pub fn read_as_metadata(&self) -> Result<HashMap<String, serde_json::Value>, MetadataReadErr> {
+        let mut file = File::open(&self.as_path())?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+        let parsed: HashMap<String, serde_json::Value> = serde_json::from_str(&contents)
+            .map_err(|err| MetadataReadErr::Json(self.as_str().to_string(), err))?;
+        Ok(parsed)
+    }
+
+    /// Create a fresh BidsPath without any entity annotations (just depth and root)
+    pub fn clear(self) -> Self {
+        Self::new(self.path.clone(), self.root, self.depth)
+    }
 }
 
 impl std::ops::Index<Range<usize>> for BidsPath {
     type Output = str;
     fn index(&self, index: Range<usize>) -> &Self::Output {
-        &self.path[index]
+        &self.as_str()[index]
     }
 }
 
 impl std::ops::Index<&Range<usize>> for BidsPath {
     type Output = str;
     fn index(&self, index: &Range<usize>) -> &Self::Output {
-        &self.path[index.clone()]
+        &self.as_str()[index.clone()]
     }
 }

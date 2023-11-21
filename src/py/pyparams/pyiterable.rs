@@ -14,6 +14,44 @@ pub fn py_iter(pyobj: &PyAny) -> PyResult<Py<PyIterator>> {
     })
 }
 
+#[macro_export]
+macro_rules! pyiterable {
+    ($enum_name:ident<$inner_ty:ty>) => {
+        #[derive(pyo3::FromPyObject)]
+        pub enum $enum_name<'a> {
+            Primitive($inner_ty),
+            Vec(Vec<$inner_ty>),
+            Iter(&'a pyo3::types::PyIterator),
+            Iterable(crate::py::pyparams::pyiterable::PyIterable<$inner_ty>),
+        }
+
+        impl<'a> pyo3::FromPyObject<'a> for crate::py::pyparams::pyiterable::PyIterable<$inner_ty> {
+            fn extract(ob: &'a pyo3::PyAny) -> pyo3::PyResult<Self> {
+                Ok(Self {
+                    data: pyo3::Python::with_gil(|py| Self::collect(py, ob))?,
+                })
+            }
+        }
+
+        impl<'a, J> TryFrom<$enum_name<'a>> for Vec<J>
+        where
+            J: From<$inner_ty>,
+        {
+            type Error = pyo3::PyErr;
+            fn try_from(value: $enum_name<'a>) -> Result<Vec<J>, Self::Error> {
+                Ok(match value {
+                    $enum_name::Primitive(prim) => vec![prim.into()],
+                    $enum_name::Vec(paths) => paths.into_iter().map(|x| x.into()).collect(),
+                    $enum_name::Iter(iter) => iter
+                        .map(|o| Ok(o?.extract::<$inner_ty>()?.into()))
+                        .collect::<pyo3::PyResult<Vec<_>>>()?,
+                    $enum_name::Iterable(iter) => iter.data.into_iter().map(|x| x.into()).collect(),
+                })
+            }
+        }
+
+    };
+}
 
 pub struct PyIterable<I> {
     pub data: Vec<I>,

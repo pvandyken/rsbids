@@ -1,56 +1,39 @@
 use std::ops::Range;
 
 use crate::{
+    errors::BidsPathErr,
     layout::{
         bidspath::BidsPath,
         builders::{
             bidspath_builder::BidsPathBuilder,
             primitives::{ComponentType, Elements, KeyVal},
-            LayoutBuilder,
         },
         check_datatype,
     },
-    standards::BIDS_ENTITIES,
+    standards::check_entity as spec_check_entity,
 };
 
-struct SpecParser<'a> {
+struct TemplateParser<I: Fn(&str) -> bool> {
     bidspath: BidsPath,
-    ds_builder: Option<&'a mut LayoutBuilder>,
+    check_entity: I,
 }
 
-impl SpecParser<'_> {
+impl<I: Fn(&str) -> bool> TemplateParser<I> {
     #[inline]
-    fn add_entity(&mut self, entity: &str, range: &Range<usize>) {
-        if let Some(builder) = &mut self.ds_builder.as_mut() {
-            builder.add_entity(entity, &self.bidspath.path[range.clone()])
+    fn finalize(&mut self) {
+        if self.bidspath.root > self.bidspath.head {
+            self.bidspath.root = self.bidspath.head
         }
     }
 
-    #[inline]
-    fn add_keyval(&mut self, keyval: &KeyVal) {
-        let entity = keyval.get_key(&self.bidspath.path);
-        let value = keyval.value(&self.bidspath.path);
-        if let Some(builder) = &mut self.ds_builder.as_mut() {
-            builder.add_entity(entity, value)
-        }
-    }
-
-    #[inline]
-    fn add_head(&mut self, head: &Range<usize>) {
-        if let Some(builder) = &mut self.ds_builder.as_mut() {
-            builder.add_head(&self.bidspath.path[head.clone()])
-        }
-    }
     fn handle_twotype(&mut self, elems: Vec<Elements>, last_component: bool) -> Result<(), ()> {
         for (j, elem) in elems.into_iter().rev().enumerate() {
             if j == 0 && last_component {
                 match elem {
                     Elements::Suffix(mut range) => {
                         if let Some(extension) = self.bidspath.extract_extension(&mut range) {
-                            self.add_entity("extension", &extension);
                             self.bidspath.extension = Some(extension);
                         }
-                        self.add_entity("suffix", &range);
                         self.bidspath.suffix = Some(range);
                     }
                     _ => {
@@ -61,8 +44,7 @@ impl SpecParser<'_> {
             } else {
                 match elem {
                     Elements::KeyVal(keyval) => {
-                        if check_entity(keyval.get_key(&self.bidspath.path)) {
-                            self.add_keyval(&keyval);
+                        if (self.check_entity)(keyval.get_key(&self.bidspath.as_str())) {
                             self.bidspath.parents.push(keyval.clone());
                         } else {
                             self.bidspath.push_part(keyval.slice.clone());
@@ -78,8 +60,7 @@ impl SpecParser<'_> {
     }
 
     fn handle_datatype(&mut self, range: Range<usize>) -> Option<LastMatch> {
-        if check_datatype(&self.bidspath.path[range.clone()]) {
-            self.add_entity("datatype", &range);
+        if check_datatype(&self.bidspath.as_str()[range.clone()]) {
             self.bidspath.datatype = Some(range.clone());
             Some(LastMatch::Datatype)
         } else {
@@ -88,8 +69,7 @@ impl SpecParser<'_> {
     }
 
     fn handle_keyval(&mut self, keyval: KeyVal) -> Option<LastMatch> {
-        if check_entity(keyval.get_key(&self.bidspath.path)) {
-            self.add_keyval(&keyval);
+        if (self.check_entity)(keyval.get_key(&self.bidspath.as_str())) {
             self.bidspath.parents.push(keyval.clone());
             Some(LastMatch::Parent)
         } else {
@@ -98,7 +78,6 @@ impl SpecParser<'_> {
     }
 
     fn handle_head(&mut self, range: Range<usize>) -> LastMatch {
-        self.add_head(&range);
         self.bidspath.head = range.end;
         LastMatch::Head
     }
@@ -116,29 +95,33 @@ enum LastMatch {
     Name,
 }
 
-fn check_entity(entity: &str) -> bool {
-    BIDS_ENTITIES.contains_left(entity)
-}
 impl BidsPathBuilder {
-    pub fn spec_parse(self, ds_builder: Option<&mut LayoutBuilder>) -> Result<BidsPath, Self> {
-        let bidspath = BidsPath::new(self.path, self.root);
+    #[inline]
+    pub fn spec_parse(self) -> Result<BidsPath, BidsPathErr> {
+        self.template_parse(spec_check_entity)
+    }
+
+    pub fn template_parse<I: Fn(&str) -> bool>(
+        self,
+        check_entity: I,
+    ) -> Result<BidsPath, BidsPathErr> {
+        let bidspath = BidsPath::new(self.path, self.root, self.depth);
         let mut lastmatch = LastMatch::Head;
         let len = self.components.len();
-        let mut parser = SpecParser {
+        let mut parser = TemplateParser {
             bidspath,
-            ds_builder,
+            check_entity,
         };
         for (i, comp) in self.components.into_iter().enumerate() {
             // Last component
             if i + 1 == len {
                 match comp {
                     ComponentType::OneType(..) | ComponentType::ZeroType(..) => {
-                        let bidspath = parser.bidspath;
-                        return Err(Self::new(bidspath.path, bidspath.root));
+                        return Err(BidsPathErr::Validation(parser.bidspath.clear()));
                     }
                     ComponentType::TwoType(elems) => {
                         if let Err(_) = parser.handle_twotype(elems, true) {
-                            return Err(Self::new(parser.bidspath.path, parser.bidspath.root));
+                            return Err(BidsPathErr::Validation(parser.bidspath.clear()));
                         }
                     }
                 }
@@ -178,12 +161,13 @@ impl BidsPathBuilder {
                     },
                     ComponentType::TwoType(elems) => {
                         if let Err(_) = parser.handle_twotype(elems, false) {
-                            return Err(Self::new(parser.bidspath.path, parser.bidspath.root));
+                            return Err(BidsPathErr::Validation(parser.bidspath.clear()));
                         }
                     }
                 }
             }
         }
+        parser.finalize();
         Ok(parser.bidspath)
     }
 }

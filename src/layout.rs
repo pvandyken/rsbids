@@ -1,6 +1,6 @@
 use std::{
-    collections::{HashMap, HashSet},
-    fmt::Display,
+    collections::{BTreeMap, HashMap, HashSet},
+    ffi::OsString,
     io,
     ops::Range,
     path::{Path, PathBuf},
@@ -12,24 +12,33 @@ use once_cell::sync::OnceCell;
 
 use builders::{LayoutBuilder, RootLabel};
 pub use iterator::BidsPathViewIterator;
+use serde::{Deserialize, Serialize};
 
 use crate::{
-    fs::{iterdir, IterdirErr},
+    dataset_description::DatasetDescription,
+    errors::{BidsPathErr, IterdirErr, QueryErr},
+    fs::{iterdir, IterIgnore},
     py::pyparams::derivatives::DerivativeSpec,
-    standards::{deref_key_alias, get_key_alias, BIDS_DATATYPES},
+    standards::{check_entity, deref_key_alias, get_key_alias, BIDS_DATATYPES},
 };
 
 use self::{
+    bidspath::BidsPath,
+    builders::{
+        bidspath_builder::BidsPathBuilder, layout_builder::FileTree,
+        metadata_builder::MetadataIndexBuilder,
+    },
     entity_table::EntityTable,
     roots::{DatasetRoot, DatasetRoots},
-    bidspath::BidsPath,
 };
 
+pub mod bidspath;
 pub mod builders;
+pub mod cache;
 pub mod entity_table;
 pub mod iterator;
-pub mod bidspath;
-mod roots;
+pub mod roots;
+pub mod utfpath;
 
 pub fn check_datatype(datatype: &str) -> bool {
     BIDS_DATATYPES.contains(datatype)
@@ -40,66 +49,99 @@ pub fn normalize_query(
 ) -> HashMap<String, Vec<QueryTerms>> {
     query
         .into_iter()
-        .map(|(key, vals)| {
-            let derefed = deref_key_alias(&key)
-                .map(ToString::to_string)
-                .unwrap_or(key);
-            (
-                derefed
+        .filter_map(|(key, vals)| {
+            if vals.len() > 0 {
+                let derefed = deref_key_alias(&key)
+                    .map(ToString::to_string)
+                    .unwrap_or(key);
+                let derefed = derefed
                     .strip_suffix("_")
                     .map(ToString::to_string)
-                    .unwrap_or(derefed),
-                vals,
-            )
+                    .unwrap_or(derefed);
+                Some((derefed, vals))
+            } else {
+                None
+            }
         })
         .collect()
 }
 
-#[derive(Eq, PartialEq, Hash)]
+#[derive(Eq, PartialEq, Hash, Debug)]
 pub enum QueryTerms {
     Bool(bool),
     String(String),
+    Number(u64),
+    Any,
 }
 
-pub enum QueryErr {
-    MissingEntity(Vec<String>),
-    MissingVal(String, Vec<String>),
-    GlobErr(globset::Error),
-}
-
-impl Display for QueryErr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            QueryErr::MissingVal(entity, vals) => f.write_fmt(format_args!(
-                "For entity: '{}': values not found: [{}]",
-                entity,
-                vals.iter().map(|val| format!("\"{}\"", val)).join(", ")
-            )),
-            QueryErr::MissingEntity(entities) => {
-                f.write_fmt(format_args!("Entity not found: [{}]", entities.join(", ")))
-            }
-            QueryErr::GlobErr(err) => f.write_fmt(format_args!("{}", err)),
-        }
+impl From<&'static str> for QueryTerms {
+    fn from(value: &'static str) -> Self {
+        QueryTerms::String(value.to_string())
     }
+}
+
+impl From<bool> for QueryTerms {
+    fn from(value: bool) -> Self {
+        QueryTerms::Bool(value)
+    }
+}
+
+#[macro_export]
+macro_rules! construct_query {
+    ( $( $key:literal : [ $( $value:expr ),* ] ),* $(,)? ) => {{
+        let mut query_map = HashMap::new();
+        $(
+            query_map.insert($key.to_string(), vec![$crate::layout::QueryTerms::from($value),*]);
+        )*
+        query_map
+    }};
+
+    ( $( $key:literal : $value:expr ),* $(,)? ) => {{
+        let mut query_map = HashMap::new();
+        $(
+            query_map.insert($key.to_string(), vec![$crate::layout::QueryTerms::from($value)]);
+        )*
+        Some(query_map)
+    }};
+
+    ( $( $key:expr => $value:expr ),* $(,)? ) => {{
+        let mut query_map = HashMap::new();
+        $(
+            query_map.insert($key.to_string(), vec![$crate::layout::QueryTerms::from($value)]);
+        )*
+        Some(query_map)
+    }};
 }
 
 fn missing_paths_err(msg: String) -> IterdirErr {
     IterdirErr::Io(io::Error::new(io::ErrorKind::NotFound, msg))
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Layout {
     paths: Arc<Vec<BidsPath>>,
-    entities: EntityTable,
+    entities: EntityTable<String>,
     pub roots: DatasetRoots,
-    view: OnceCell<HashSet<usize>>,
+    heads: HashMap<String, HashSet<usize>>,
+    filetree: Arc<FileTree>,
+    depths: Arc<BTreeMap<usize, HashSet<usize>>>,
+    #[serde(
+        serialize_with = "crate::serialize::serialize",
+        deserialize_with = "crate::serialize::deserialize"
+    )]
+    metadata: OnceCell<EntityTable<String>>,
+    #[serde(
+        serialize_with = "crate::serialize::serialize",
+        deserialize_with = "crate::serialize::deserialize"
+    )]
+    view: OnceCell<Vec<usize>>,
 }
 
 impl Layout {
     pub fn create(
-        paths: Vec<String>,
+        paths: Vec<PathBuf>,
         derivatives: Option<Vec<DerivativeSpec>>,
-        validate: bool
+        validate: bool,
     ) -> Result<Layout, IterdirErr> {
         let mut dataset = LayoutBuilder::default();
         let mut invalid_paths = Vec::new();
@@ -118,18 +160,33 @@ impl Layout {
         if invalid_paths.len() > 1 {
             let mut msg = String::from("The following paths do not exist:\n");
             for path in invalid_paths {
-                msg.push_str(&format!("  {}\n", path));
+                msg.push_str(&format!("  {}\n", path.to_string_lossy()));
             }
             return Err(missing_paths_err(msg));
         } else if let Some(path) = invalid_paths.first() {
-            return Err(missing_paths_err(format!("Path does not exist: {}", path,)));
+            return Err(missing_paths_err(format!(
+                "Path does not exist: {}",
+                path.to_string_lossy(),
+            )));
         }
 
+        let mut ignore = IterIgnore::new();
+        ignore.paths.extend(
+            paths
+                .iter()
+                .chain(derivatives.iter().flatten().flat_map(|d| &d.paths))
+                .map(|s| PathBuf::from(s)),
+        );
+        ignore.names = HashSet::from([
+            OsString::from("derivatives"),
+            OsString::from("sourcedata"),
+            OsString::from("code"),
+        ]);
         for path in paths {
             let rootpos = dataset
                 .register_root(Some(&path), RootLabel::Raw)
                 .unwrap_or(0);
-            iterdir(PathBuf::from(path), |path| {
+            iterdir(path, &ignore, |path| {
                 // Ignoring validation errors for now
                 dataset.add_path(path, rootpos, validate).unwrap_or(())
             })?;
@@ -144,7 +201,7 @@ impl Layout {
                     let rootpos = dataset
                         .register_root(Some(&path), label.clone())
                         .unwrap_or(0);
-                    iterdir(PathBuf::from(path), |path| {
+                    iterdir(path, &ignore, |path| {
                         // Ignoring validation errors for now
                         dataset.add_path(path, rootpos, validate).unwrap_or(())
                     })?;
@@ -154,49 +211,77 @@ impl Layout {
         Ok(dataset.finalize())
     }
 
+    pub fn parse(&self, path: PathBuf) -> Result<BidsPath, BidsPathErr> {
+        let root = BidsPathBuilder::locate_root(&path)
+            .map(|r| r.0)
+            .unwrap_or(0);
+        let builder = BidsPathBuilder::new(path, root)?;
+        builder.template_parse(|s| self.entities.contains_key(s) || check_entity(s))
+    }
+
     fn filter_root<'a>(
-        view: &HashSet<usize>,
-        root: (&'a String, &DatasetRoot),
-    ) -> Option<&'a String> {
+        view: &Vec<usize>,
+        root: (&'a PathBuf, &'a DatasetRoot),
+    ) -> Option<(&'a PathBuf, &'a DatasetRoot)> {
         let (root, ranges) = root;
         if view.iter().any(|i| ranges.contains(i)) {
-            Some(root)
+            Some((root, ranges))
         } else {
             None
         }
     }
 
-    pub fn get_roots(&self) -> Vec<&String> {
+    pub fn get_roots(&self) -> Vec<&PathBuf> {
         if let Some(view) = self.view.get() {
             self.roots
                 .items()
-                .filter_map(|root| Self::filter_root(view, root))
+                .filter_map(|root| Self::filter_root(view, root).map(|r| r.0))
                 .collect()
         } else {
             self.roots.keys().collect()
         }
     }
 
-    pub fn get_raw_roots(&self) -> Vec<&String> {
+    fn filtered_roots<'a, I: Iterator<Item = (&'a PathBuf, &'a DatasetRoot)> + 'a>(
+        &'a self,
+        roots: I,
+    ) -> Box<dyn Iterator<Item = (&'a PathBuf, &'a DatasetRoot)> + 'a> {
         if let Some(view) = self.view.get() {
-            self.roots
-                .raw_items()
-                .filter_map(|root| Self::filter_root(view, root))
-                .collect()
+            Box::new(roots.filter_map(|root| {
+                let (root, ranges) = root;
+                if view.iter().any(|i| ranges.contains(i)) {
+                    Some((root, ranges))
+                } else {
+                    None
+                }
+            }))
         } else {
-            self.roots.raw_keys().collect()
+            Box::new(self.roots.raw_items())
         }
     }
 
-    pub fn get_derivative_roots(&self) -> Vec<&String> {
-        if let Some(view) = self.view.get() {
-            self.roots
-                .derivative_items()
-                .filter_map(|root| Self::filter_root(view, root))
-                .collect()
-        } else {
-            self.roots.derivative_keys().collect()
-        }
+    pub fn get_raw_roots(&self) -> Vec<&PathBuf> {
+        self.filtered_roots(self.roots.raw_items())
+            .map(|r| r.0)
+            .collect()
+    }
+
+    pub fn get_derivative_roots(&self) -> Vec<&PathBuf> {
+        self.filtered_roots(self.roots.derivative_items())
+            .map(|r| r.0)
+            .collect()
+    }
+
+    pub fn get_raw_descriptions(&self) -> Vec<(&PathBuf, Arc<DatasetDescription>)> {
+        self.filtered_roots(self.roots.raw_items())
+            .filter_map(|r| r.1.get_description().map(|d| (r.0, d)))
+            .collect()
+    }
+
+    pub fn get_derivative_descriptions(&self) -> Vec<(&PathBuf, Arc<DatasetDescription>)> {
+        self.filtered_roots(self.roots.derivative_items())
+            .filter_map(|r| r.1.get_description().map(|d| (r.0, d)))
+            .collect()
     }
 
     pub fn display_root_ranges(&self) -> String {
@@ -225,13 +310,21 @@ impl Layout {
             .collect()
     }
 
+    pub fn metadata_key_vals(&self) -> Option<HashMap<&str, Vec<&String>>> {
+        self.metadata.get().map(|m| {
+            m.iter()
+                .map(|(key, value)| (key as &str, value.keys().collect_vec()))
+                .collect()
+        })
+    }
+
     pub fn fmt_elided_list(&self, limit: usize) -> String {
         let mut msg = String::from("[ ");
         msg.push_str(
             &self
                 .get_paths()
                 .take(limit)
-                .map(|bp| format!("\"{}\"", bp.path))
+                .map(|bp| format!("\"{}\"", bp.path.as_str()))
                 .join("\n  "),
         );
         if self.len() > limit {
@@ -241,7 +334,7 @@ impl Layout {
         msg
     }
 
-    pub fn all_indices(&self) -> &HashSet<usize> {
+    pub fn all_indices(&self) -> &Vec<usize> {
         self.view
             .get_or_init(|| self.full_range().into_iter().collect())
     }
@@ -276,16 +369,23 @@ impl Layout {
     }
 
     pub fn get_path(&self, index: usize) -> Option<BidsPath> {
-        self.paths.get(index).cloned().map(|mut path| {
+        let ix = if let Some(view) = self.view.get() {
+            *view.iter().nth(index)?
+        } else {
+            index
+        };
+        self.paths.get(ix).cloned().map(|mut path| {
             path.update_parents(&self.entity_keys().cloned().collect());
             path
         })
     }
 
+    /// The total number of paths in the layout, ignoring applied views
     pub fn num_paths(&self) -> usize {
         self.paths.len()
     }
 
+    /// The total number of paths in the current view of the layout
     pub fn len(&self) -> usize {
         if let Some(idx) = self.view.get() {
             idx.len()
@@ -294,7 +394,7 @@ impl Layout {
         }
     }
 
-    pub fn get_scopes(&self, scopes: Vec<String>) -> Result<Option<Vec<String>>, QueryErr> {
+    pub fn get_scopes(&self, scopes: Vec<String>) -> Result<Option<Vec<PathBuf>>, QueryErr> {
         self.roots.get_scopes(scopes)
     }
 
@@ -304,26 +404,49 @@ impl Layout {
         entity: &String,
         values: &HashMap<String, HashSet<usize>>,
         new_entities: &mut HashMap<String, HashMap<String, HashSet<usize>>>,
-    ) -> Result<Option<HashSet<usize>>, QueryErr> {
+    ) -> Result<HashSet<usize>, QueryErr> {
         let mut new_entity_vals = HashMap::new();
         let mut has_true = false;
         let mut has_false = false;
-        let mut queried: HashSet<_> = query
-            .into_iter()
-            .filter_map(|query| match query {
+        let mut queried = HashSet::new();
+        for q in query {
+            match q {
                 QueryTerms::Bool(boolean) => match boolean {
                     true => {
                         has_true = true;
-                        None
                     }
                     false => {
                         has_false = true;
-                        None
                     }
                 },
-                QueryTerms::String(string) => Some(string),
-            })
-            .collect();
+                QueryTerms::String(string) => {
+                    queried.insert(string);
+                }
+                QueryTerms::Number(num) => {
+                    let matches: HashSet<_> = values
+                        .keys()
+                        .filter_map(|v| {
+                            if v.parse::<u64>() == Ok(num) {
+                                Some(v)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if matches.len() > 1 {
+                        return Err(QueryErr::AmbiguousQuery(
+                            entity.clone(),
+                            num,
+                            matches.into_iter().cloned().collect(),
+                        ))
+                    }
+                    if let Some(m) = matches.into_iter().next() {
+                        queried.insert(m.to_owned());
+                    }
+                }
+                QueryTerms::Any => (),
+            }
+        }
         let mut selection: HashSet<usize> = values
             .iter()
             .filter_map(|(label, indices)| {
@@ -338,6 +461,9 @@ impl Layout {
         if has_false {
             let false_indices: HashSet<_> = self
                 .all_indices()
+                .iter()
+                .cloned()
+                .collect::<HashSet<_>>()
                 .difference(&self.all_entity_indices(&entity).unwrap())
                 .cloned()
                 .collect();
@@ -350,42 +476,87 @@ impl Layout {
                 queried.into_iter().collect(),
             ))
         } else {
-            Ok(Some(selection))
+            Ok(selection)
         }
     }
 
     pub fn query(
         &self,
         query: Option<HashMap<String, Vec<QueryTerms>>>,
-        roots: Option<Vec<String>>,
+        roots: Option<Vec<PathBuf>>,
+        mask: Option<&HashSet<usize>>,
     ) -> Result<Layout, QueryErr> {
-        let mut new_entities = HashMap::new();
+        let mut new_entities = EntityTable::new();
+        let mut new_metadata = EntityTable::new();
         let queried = match query {
             Some(query) => Some({
+                // let not_found = Vec::new();
                 let mut query = normalize_query(query);
-                let selected = self
-                    .entities
-                    .iter()
-                    .map(|(entity, values)| match query.remove(entity) {
+                let mut missing_vals = Vec::new();
+                let mut selected = Vec::new();
+                for (entity, values) in self.entities.iter() {
+                    match query.remove(entity) {
                         Some(queried) => {
-                            self.query_entity(queried, entity, values, &mut new_entities)
+                            match self.query_entity(queried, &entity, &values, &mut new_entities) {
+                                Ok(ent) => selected.push(ent),
+                                Err(err) => missing_vals.push(err),
+                            }
                         }
                         None => {
                             new_entities.insert(entity.clone(), values.clone());
-                            Ok(None)
                         }
-                    })
-                    .collect::<Result<Vec<_>, _>>();
+                    }
+                }
+                let md_selected = if let Some(metadata) = self.metadata.get() {
+                    let mut md_selected = Vec::new();
+                    for (entity, values) in metadata.iter() {
+                        match query.remove(entity) {
+                            Some(queried) => {
+                                match self.query_entity(
+                                    queried,
+                                    &entity,
+                                    &values,
+                                    &mut new_metadata,
+                                ) {
+                                    Ok(ent) => md_selected.push(ent),
+                                    Err(err) => missing_vals.push(err),
+                                }
+                            }
+                            None => {
+                                new_entities.insert(entity.clone(), values.clone());
+                            }
+                        }
+                    }
+                    Some(md_selected)
+                } else {
+                    None
+                };
 
                 if query.len() > 0 {
                     return Err(QueryErr::MissingEntity(query.keys().cloned().collect()));
                 }
 
-                selected?
+                if missing_vals.len() > 0 {
+                    // For now ignore value errors
+                    // return Err(QueryErr::MutliErr(missing_vals));
+                }
+
+                let selected = selected
                     .into_iter()
-                    .flatten()
                     .reduce(|set, next| &set & &next)
-                    .unwrap_or_else(|| HashSet::new())
+                    .unwrap_or_else(|| HashSet::new());
+
+                let md_selected = md_selected.map(|m| {
+                    m.into_iter()
+                        .reduce(|set, next| &set & &next)
+                        .unwrap_or_else(|| HashSet::new())
+                });
+
+                if let Some(md_selected) = md_selected {
+                    &selected | &md_selected
+                } else {
+                    selected
+                }
             }),
             None => {
                 new_entities = self.entities.clone();
@@ -394,50 +565,96 @@ impl Layout {
         };
 
         let roots = roots
-            .map(|roots| Ok(self.roots.glob_roots(roots).map_err(QueryErr::GlobErr)?))
+            .map(|roots| -> Result<_, QueryErr> { Ok(self.roots.glob_roots(roots)?) })
             .transpose()?;
 
-        let root_ranges = roots.as_ref().map(|roots| roots.full_range());
+        let root_ranges = roots.as_ref().map(|roots| roots.into_set());
 
-        let selected = vec![root_ranges, queried]
+        let selected = vec![mask, root_ranges.as_ref(), queried.as_ref()]
             .into_iter()
             .flatten()
-            .reduce(|set, next| &set & &next);
+            .fold(None, |set, next| match set {
+                Some(s) => Some(&s & next),
+                None => Some(next.clone()),
+            });
 
-        let filtered_entities: HashMap<_, _> = if let Some(selected) = &selected {
-            new_entities
-                .into_iter()
-                .filter_map(|(entity, values)| {
-                    let filtered_values: HashMap<_, _> = values
-                        .into_iter()
-                        .filter_map(|(value, insts)| {
-                            let new = selected & &insts;
-                            if new.len() > 0 {
-                                Some((value, new))
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    if filtered_values.len() > 0 {
-                        Some((entity, filtered_values))
-                    } else {
-                        None
-                    }
-                })
-                .collect()
+        let filtered_entities: EntityTable<String> = if let Some(selected) = &selected {
+            Self::filter_entity_table(new_entities, selected)
         } else {
             new_entities
+        };
+        let filtered_metadata: EntityTable<String> = if let Some(selected) = &selected {
+            Self::filter_entity_table(new_metadata, selected)
+        } else {
+            new_metadata
         };
 
         Ok(Layout {
             paths: Arc::clone(&self.paths),
             entities: filtered_entities,
             roots: roots.unwrap_or_else(|| self.roots.clone()),
+            heads: self.heads.clone(),
+            filetree: Arc::clone(&self.filetree),
+            depths: Arc::clone(&self.depths),
+            metadata: if self.metadata.get().is_none() {
+                OnceCell::new()
+            } else {
+                OnceCell::with_value(filtered_metadata)
+            },
             view: match selected {
-                Some(selected) => OnceCell::with_value(selected),
-                None => OnceCell::new(),
+                Some(selected) => OnceCell::with_value(selected.into_iter().sorted().collect()),
+                None => self.view.clone(),
             },
         })
+    }
+
+    /// Filter entity table based on a mask
+    fn filter_entity_table(
+        table: EntityTable<String>,
+        mask: &HashSet<usize>,
+    ) -> EntityTable<String> {
+        table
+            .into_iter()
+            .filter_map(|(entity, values)| {
+                let filtered_values: HashMap<_, _> = values
+                    .into_iter()
+                    .filter_map(|(value, insts)| {
+                        let new = mask & &insts;
+                        if new.len() > 0 {
+                            Some((value, new))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if filtered_values.len() > 0 {
+                    Some((entity, filtered_values))
+                } else {
+                    None
+                }
+            })
+            .collect::<HashMap<_, _>>()
+            .into()
+    }
+
+    pub fn index_metadata(&mut self) {
+        self.metadata.get_or_init(|| {
+            let md_builder =
+                MetadataIndexBuilder::build(self.depths.as_ref(), self.filetree.as_ref(), self);
+            md_builder.metadata
+        });
+    }
+
+    pub fn deep_clone(&self) -> Self {
+        Self {
+            paths: Arc::new(self.paths.as_ref().clone()),
+            entities: self.entities.clone(),
+            roots: self.roots.clone(),
+            heads: self.heads.clone(),
+            filetree: Arc::new(self.filetree.as_ref().clone()),
+            depths: Arc::new(self.depths.as_ref().clone()),
+            metadata: self.metadata.clone(),
+            view: self.view.clone(),
+        }
     }
 }
