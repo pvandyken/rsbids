@@ -334,7 +334,8 @@ impl Layout {
         msg
     }
 
-    pub fn all_indices(&self) -> &Vec<usize> {
+    /// Returns the current view on the layout as a vector
+    pub fn get_view(&self) -> &Vec<usize> {
         self.view
             .get_or_init(|| self.full_range().into_iter().collect())
     }
@@ -357,7 +358,7 @@ impl Layout {
             BidsPathViewIterator::new(
                 Arc::clone(&self.paths),
                 self.entity_keys().cloned().collect(),
-                Some(self.all_indices().clone()),
+                Some(self.get_view().clone()),
             )
         } else {
             BidsPathViewIterator::new(
@@ -438,7 +439,7 @@ impl Layout {
                             entity.clone(),
                             num,
                             matches.into_iter().cloned().collect(),
-                        ))
+                        ));
                     }
                     if let Some(m) = matches.into_iter().next() {
                         queried.insert(m.to_owned());
@@ -460,7 +461,7 @@ impl Layout {
             .fold(HashSet::new(), |set, next| &set | next);
         if has_false {
             let false_indices: HashSet<_> = self
-                .all_indices()
+                .get_view()
                 .iter()
                 .cloned()
                 .collect::<HashSet<_>>()
@@ -655,6 +656,31 @@ impl Layout {
             depths: Arc::new(self.depths.as_ref().clone()),
             metadata: self.metadata.clone(),
             view: self.view.clone(),
+        }
+    }
+
+}
+
+impl PartialEq for Layout {
+    fn eq(&self, other: &Self) -> bool {
+        let same_view = || self.get_view() == other.get_view();
+        // If both have the same path pointer, check is really quick
+        if Arc::ptr_eq(&other.paths, &self.paths) {
+
+            if same_view() {
+                true
+
+            } else {
+                false
+            }
+        // Otherwise need exhaustive search
+        // Note that root equality is implied by path equality (equal paths must have the same root)
+        } else if same_view() {
+            let ourpaths: HashSet<_> = self.paths.iter().cloned().collect();
+            let theirpaths: HashSet<_> = other.paths.iter().cloned().collect();
+            ourpaths == theirpaths
+        } else {
+            false
         }
     }
 }

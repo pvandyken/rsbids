@@ -58,12 +58,16 @@ impl MetadataIndexBuilder {
                     // For now, we ignore all errors related to metadata handling
                     // Eventually these can be escalated based on configuration
                     let _ = || -> Result<(), MetadataIndexErr> {
-                        if let Some(ixs) = filetree.get_subfiles(&md.as_path().parent().unwrap()) {
+                        if let Some(ixs) = filetree
+                            .get_subfiles(&md.as_path().parent().expect("Should have a parent"))
+                        {
                             let ref_entities = md.get_full_entities();
                             let ixs = ixs
                                 .into_iter()
                                 .filter(|ix| {
-                                    let child_path = layout.get_path(*ix).expect("Can't fail");
+                                    let child_path = layout.get_path(*ix).expect(
+                                        "Internal state of filetree should match that of layout",
+                                    );
                                     let path_entities = child_path.get_full_entities();
                                     for (key, val) in &ref_entities {
                                         if key == &"extension" {

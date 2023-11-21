@@ -4,6 +4,7 @@ use std::{
     io::Read,
     ops::Range,
     path::Path,
+    hash::Hash,
 };
 
 use itertools::chain;
@@ -226,3 +227,18 @@ impl std::ops::Index<&Range<usize>> for BidsPath {
         &self.as_str()[index.clone()]
     }
 }
+
+impl Hash for BidsPath {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_path().hash(state);
+        self.root.hash(state);
+    }
+}
+
+impl PartialEq for BidsPath {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_path() == other.as_path() && self.root == other.root
+    }
+}
+
+impl Eq for BidsPath {}

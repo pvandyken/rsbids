@@ -231,7 +231,6 @@ impl BidsPathBuilder {
         let len = path.to_string_lossy().len();
         if let Some(description_path) = Self::find_dataset_description(&path) {
             let len = description_path.to_string_lossy().len();
-            dbg!(&description_path);
             Some((len, description_path))
         } else if path.is_file() {
             if let Some(rootpath) = path.parent() {
@@ -247,7 +246,6 @@ impl BidsPathBuilder {
 
     fn find_dataset_description(path: &Path) -> Option<&Path> {
         for parent in path.ancestors() {
-            dbg!(&parent);
             if parent.join("dataset_description.json").exists() {
                 return Some(parent);
             }

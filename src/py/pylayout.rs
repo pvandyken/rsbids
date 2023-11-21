@@ -21,12 +21,12 @@ use super::{
 };
 use crate::dataset_description::DatasetDescription;
 use crate::layout::cache::LayoutCache;
-use crate::layout::roots::{DatasetRoot, RootCategory};
+use crate::layout::roots::RootCategory;
 use crate::layout::Layout;
 
 #[pyclass(module = "rsbids", name = "BidsLayout")]
 pub struct PyLayout {
-    inner: Layout,
+    pub inner: Layout,
 }
 
 #[pymethods]
@@ -278,6 +278,14 @@ impl PyLayout {
         }
     }
 
+    fn __eq__(&self, other: &Self) -> bool {
+        self.inner.eq(&other.inner)
+    }
+
+    fn __bool__(&self) -> bool {
+        self.inner.len() > 0
+    }
+
     #[classmethod]
     fn load(_cls: &PyType, path: PathBuf) -> PyResult<Self> {
         Ok(Self {
@@ -286,20 +294,6 @@ impl PyLayout {
     }
 
     pub fn save(&self, path: PathBuf) -> PyResult<()> {
-        let foo = bincode::serialize(
-            &self
-                .inner
-                .roots
-                .items()
-                .next()
-                .unwrap()
-                .1
-        )
-        .unwrap();
-        dbg!(&foo);
-        dbg!(String::from_utf8_lossy(&foo));
-        let dd: Result<DatasetRoot, _> = bincode::deserialize(&foo);
-        dbg!(&dd);
         LayoutCache::save(&self.inner, path)?;
         Ok(())
     }
