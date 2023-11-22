@@ -2,11 +2,18 @@ from __future__ import annotations
 from pathlib import Path, PurePath
 from pathlib import _PathParents  # type: ignore
 import sys
-from typing import TYPE_CHECKING, Any, Generator, Self, Sequence
+from typing import TYPE_CHECKING, Any, Generator, Sequence
+from typing_extensions import Self
 
 if TYPE_CHECKING:
     from _typeshed import StrPath
 
+class _UserPathParents(_PathParents):  # type: ignore
+    def __getitem__(self, idx: int) -> Path:
+        elem = super().__getitem__(idx)  # type: ignore
+        if isinstance(elem, tuple):
+            return tuple(self.with_segments(p) for p in elem)  # type: ignore
+        return self.with_segments(elem)  # type: ignore
 
 class UserPathImpl(type(Path())):
     entities: dict[str, str]
@@ -28,13 +35,6 @@ class UserPathImpl(type(Path())):
 
     @property
     def parents(self) -> Sequence[Self]:
-        class _UserPathParents(_PathParents):  # type: ignore
-            def __getitem__(self_, idx: int):  # type: ignore
-                elem = super().__getitem__(idx)  # type: ignore
-                if isinstance(elem, tuple):
-                    return tuple(self.with_segments(p) for p in elem)  # type: ignore
-                return self.with_segments(elem)  # type: ignore
-
         return _UserPathParents(self)
 
     @property
@@ -47,8 +47,9 @@ class UserPathImpl(type(Path())):
     def with_name(self, name: str) -> Self:
         return self.with_segments(Path(self).with_name(name))
 
-    def with_stem(self, stem: str) -> Self:
-        return self.with_segments(Path(self).with_stem(stem))
+    if sys.version_info >= (3, 9):
+        def with_stem(self, stem: str) -> Self:
+            return self.with_segments(Path(self).with_stem(stem))
 
     def with_suffix(self, suffix: str) -> Self:
         return self.with_segments(Path(self).with_suffix(suffix))

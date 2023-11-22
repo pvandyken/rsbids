@@ -25,7 +25,7 @@
 #
 # See https://github.com/bids-standard/pybids for more information
 
-from __future__ import absolute_import
+from __future__ import annotations
 from typing import Iterable, Sequence, TypeVar
 
 _T = TypeVar("_T", "str | bool", str, bool)

@@ -46,7 +46,6 @@ class BidsPath(UserPath):
 
             # For propery bids validity, there should only be one file at this point,
             # but don't worry about that for now
-            print(jsons)
             for path in jsons:
                 result.update(path.read_json())
 
