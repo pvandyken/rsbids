@@ -6,6 +6,18 @@
 
 The alpha period is an opportunity to test and experiment. Community engagement and feedback is highly valued, and will have an impact on future development. In the immediate future, work will focus on testing, stability, and basic configuration/validation. However, any feature ideas and feedback on the api are welcome. (Note that there's a number of issues I'm already aware of, so be sure to read this document before leaving bug reports).
 
+## Installation
+
+`rsbids` is precompiled for most environments, so installation is generally as simple as:
+
+```sh
+pip install rsbids
+```
+
+On more exotic linux versions, or custom environments such as HPCs, the precompiled wheels may not work and `rsbids` will need to be compiled. Fortunately, this is generally really straight forward.
+
+First, ensure rust is installed on your system. You can follow the simple instructions from [rustup](https://rustup.rs/) to install directly, or on an HPC, load up rust using its software version control (e.g. for `lmod`: `module load rust`). Then just pip-install as normal, and `rsbids` should automatically be compiled (note that it may take several minutes).
+
 ## Notable differences from pybids
 
 Along with the substantial speed boost, `rsbids` optimizes many aspects of the `pybids` api:
