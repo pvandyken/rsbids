@@ -7,6 +7,9 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: PyPy",
 ]
 dynamic = ["version"]
+dependencies = [
+    "typing-extensions>=4.8.0",
+]
 
 
 [build-system]

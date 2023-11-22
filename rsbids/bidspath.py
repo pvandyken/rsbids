@@ -1,7 +1,8 @@
 from __future__ import annotations
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Container, Iterable, Self
+from typing import TYPE_CHECKING, Any, Container, Iterable
+from typing_extensions import Self
 
 from rsbids.userpath import UserPath
 from rsbids._lib import create_pybidspath, BidsLayout
