@@ -1,4 +1,3 @@
-from ._lib import BidsLayout
-from .entry import parse
+from .entry import parse, layout
 
-__all__ = ["BidsLayout", "parse"]
+__all__ = ["layout", "parse"]
