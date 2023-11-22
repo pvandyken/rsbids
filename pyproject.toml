@@ -8,7 +8,7 @@ classifiers = [
 ]
 dynamic = ["version"]
 dependencies = [
-    "typing-extensions>=4.8.0",
+    "typing-extensions>=3.7.4.1",
 ]
 
 
