@@ -1,12 +1,11 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING, Iterable, overload, Mapping
+from typing import TYPE_CHECKING, Iterable, overload
 
 from rsbids.bidspath import BidsPath
-from rsbids._lib import BidsLayout
 
 
 if TYPE_CHECKING:
-    from rsbids._lib import StrPath, DerivPathList
+    from rsbids._lib import StrPath
 
 
 @overload
@@ -27,20 +26,3 @@ def parse(path: StrPath | Iterable[StrPath]):
         for p in path:  # type: ignore
             result.append(BidsPath(p))  # type: ignore
         return result
-
-
-def layout(
-    roots: None | StrPath | Iterable[StrPath] = ...,
-    derivatives: None | bool | DerivPathList | Mapping[str, DerivPathList] = ...,
-    *,
-    validate: bool = False,
-    cache: StrPath | None = None,
-    reset_cache: bool = False,
-):
-    return BidsLayout(
-        roots=roots,
-        derivatives=derivatives,
-        validate=validate,
-        cache=cache,
-        reset_cache=reset_cache,
-    )
