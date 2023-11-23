@@ -1,3 +1,5 @@
-from rsbids.entry import parse, layout
+from rsbids.entry import parse
+from rsbids._lib import BidsLayout
+from rsbids.bidspath import BidsPath
 
-__all__ = ["layout", "parse"]
+__all__ = ["BidsLayout", "parse", "BidsPath"]
