@@ -1,6 +1,7 @@
 from os import PathLike
 from pathlib import Path
-from typing import Iterable, Mapping, Self
+from typing import Iterable, Mapping
+from typing_extensions import Self
 
 from rsbids.bidspath import BidsPath
 

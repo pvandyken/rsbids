@@ -33,9 +33,9 @@ def layout(
     roots: None | StrPath | Iterable[StrPath] = ...,
     derivatives: None | bool | DerivPathList | Mapping[str, DerivPathList] = ...,
     *,
-    validate: bool = ...,
-    cache: StrPath | None = ...,
-    reset_cache: bool = ...,
+    validate: bool = False,
+    cache: StrPath | None = None,
+    reset_cache: bool = False,
 ):
     return BidsLayout(
         roots=roots,
