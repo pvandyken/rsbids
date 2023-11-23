@@ -84,6 +84,7 @@ class BIDSFile:
     @property
     def relpath(self):
         """Return path relative to layout root"""
+        raise CompatibilityError("BIDSFIle.relpath() is not yet implemented")
 
     def get_associations(self, kind=None, include_parents=False):
         """Get associated files, optionally limiting by association kind.
