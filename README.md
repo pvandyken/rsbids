@@ -29,6 +29,32 @@ Benchmarks are calculated on the openly available [_HBN EO/EC task_ dataset](htt
 
 ![Benchmarks for rsbids](https://github.com/pvandyken/rsbids-benchmark/blob/07b1fdeee5be4ceda03737f793bb7e38042f03d5/assets/benchmarks.png)
 
+
+## Pybids Compatibility
+
+A compability api can be found under `rsbids.pybids`. So in general, you can:
+
+```py
+# replace
+from bids import BIDSLayout
+
+# with
+from rsbids.pybids import BIDSLayout
+```
+
+As of now, the indexing and querying methods on `BIDSLayout` are implemented with some limitations:
+
+- `BIDSLayout(validate=True)` redirects into `rsbids.BidsLayout(validate=True)`, which has a different meaning (validation will eventually be equivalent to pybids, but this needs to be developed)
+- No regex based ignoring of files is possible
+- `BIDSLayoutIndexer` can be constructed and used to skip metadata indexing, but all the other fields do nothing.
+- Calling `BIDSLayout.get()` returns a list of `BIDSPaths` as before. The API for this compatibility `BIDSPath` is not yet complete (no `.copy`, `.get_associations`, or `.relpath`)
+- Entity retrieval methods return a mocked version of [`Entity`](https://bids-standard.github.io/pybids/generated/bids.layout.Entity.html#bids.layout.Entity) (rsbids has no such `Entity` class). The methods and properties of `Entity` are all implemented, however, because `rsbids` does not use regex when parsing paths, it can only "guess" at the `pattern` and `regex` properties of `Entity`. These should not be trusted for any automated use.
+- The methods searching for associated files on `BIDSLayout` are not yet implemented (including `get_bval`, `get_filedmap`, etc). `get_metadata` DOES work.
+- Path building methods and data copying methods are also not implemented (e.g. `build_path`, `write_to_file`)
+- `database_path` and `reset_database` are both implemented, but use `rsbids` caches, not `pybids` databases. So they won't read your previous pybids databases! (Because `rsbids` is so fast, caching should not be necessary unless your files are on a network filesystem).
+
+That being said, we encourage users to try the new API. Feel free to leave feedback regarding any potential improvements!
+
 ## Notable differences from pybids
 
 Along with the substantial speed boost, `rsbids` optimizes many aspects of the `pybids` api:
