@@ -18,6 +18,13 @@ On more exotic linux versions, or custom environments such as HPCs, the precompi
 
 First, ensure rust is installed on your system. You can follow the simple instructions from [rustup](https://rustup.rs/) to install directly, or on an HPC, load up rust using its software version control (e.g. for `lmod`: `module load rust`). Then just pip-install as normal, and `rsbids` should automatically be compiled (note that it may take several minutes).
 
+
+## Benchmarks
+
+Benchmarks are calculated on the openly available [_HBN EO/EC task_ dataset](https://openneuro.org/datasets/ds004186/versions/2.0.0), consisting of 177,065 files, including metadata. `rsbids` is compared to [`pybids`](https://github.com/bids-standard/pybids), [`ancpbids-bids`](https://github.com/ANCPLabOldenburg/ancp-bids), and [`bids2table`](https://github.com/cmi-dair/bids2table). The code for running the benchmarks and generating the figure can be found at the [rsbids-benchmark](https://github.com/pvandyken/rsbids-benchmark.git) repository. More information on the method and tasks can be found there.
+
+![Benchmarks for rsbids](https://github.com/pvandyken/rsbids-benchmark/blob/07b1fdeee5be4ceda03737f793bb7e38042f03d5/assets/benchmarks.png)
+
 ## Notable differences from pybids
 
 Along with the substantial speed boost, `rsbids` optimizes many aspects of the `pybids` api:
