@@ -114,7 +114,7 @@ Thus, `rsbids` allows multiple raw roots:
 
 ```python
 # rsbids
-layout = rsbids.layout(["root1", "root2"])
+layout = rsbids.BidsLayout(["root1", "root2"])
 ```
 
 These roots can be then queried using roots:
@@ -127,7 +127,7 @@ New to `rsbids`, derivatives can be labelled:
 
 ```python
 #rsbids
-layout = rsbids.layout(
+layout = rsbids.BidsLayout(
     "dataset",
     derivatives={
         "proc1": "dataset/derivatives/proc1-v0.10.1",
@@ -156,7 +156,7 @@ layout.roots
 If the dataset has a single raw root (with any number of derivatives), the `.root` attribute can be used to retrieve that root:
 
 ```python
-layout = rsbids.layout(
+layout = rsbids.BidsLayout(
     "dataset",
     derivatives={
         "proc1": "dataset/derivatives/proc1-v0.10.1",
@@ -169,7 +169,7 @@ layout.root == "dataset"
 If there is no raw root, but exactly one derivative root, `.root` will retrieve the derivative
 
 ```python
-layout = rsbids.layout(
+layout = rsbids.BidsLayout(
     "dataset",
     derivatives={
         "proc1": "dataset/derivatives/proc1-v0.10.1",
@@ -181,7 +181,7 @@ layout.filter(scope="proc1").root == "dataset/derivatives/proc1-v0.10.1"
 All other calls to `.root` will error:
 
 ```python
-layout = rsbids.layout(
+layout = rsbids.BidsLayout(
     "dataset",
     derivatives={
         "proc1": "dataset/derivatives/proc1-v0.10.1",
@@ -193,7 +193,7 @@ layout.derivatives.root # !!! Error: multiple roots
 The `.description` attribute works according to equivalent logic:
 
 ```python
-layout = rsbids.layout(
+layout = rsbids.BidsLayout(
     "dataset",
     derivatives={
         "proc1": "dataset/derivatives/proc1-v0.10.1",
