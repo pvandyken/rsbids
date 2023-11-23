@@ -1,5 +1,9 @@
 # rsbids
 
+[![Version](https://img.shields.io/github/v/tag/pvandyken/rsbids?label=version)](https://pypi.org/project/rsbids/)
+[![Python versions](https://img.shields.io/pypi/pyversions/rsbids)](https://pypi.org/project/rsbids/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 `rsbids` is a rust implementation of [`pybids`](https://github.com/bids-standard/pybids), currently under active development. It offers vastly improved runtimes compared to other bids indexers (benchmarks to come), a streamlined core api, and a pybids compatibility api.
 
 **`rsbids` is currently in alpha**. Most of the core pybids features are implemented, however, there is little to no automated testing or documentation. It has only rudimentary validation and no configurability. Pybids compatibility has been implemented for much of `pybids.layout.layout`, `pybids.layout.indexers`, and `pybids.layout.models`. Not all features are available, however. Whenever possible, a `CompatibilityError` or warning will be raised when these features are encountered. Finally, api stability is not guarenteed for any aspect of the api.
