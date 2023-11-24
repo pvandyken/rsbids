@@ -48,6 +48,7 @@ As of now, the indexing and querying methods on `BIDSLayout` are implemented wit
 - No regex based ignoring of files is possible
 - `BIDSLayoutIndexer` can be constructed and used to skip metadata indexing, but all the other fields do nothing.
 - Calling `BIDSLayout.get()` returns a list of `BIDSPaths` as before. The API for this compatibility `BIDSPath` is not yet complete (no `.copy`, `.get_associations`, or `.relpath`)
+- Regex searching via `.get()` is not yet supported. `return_type="dir"` is also not supported
 - Entity retrieval methods return a mocked version of [`Entity`](https://bids-standard.github.io/pybids/generated/bids.layout.Entity.html#bids.layout.Entity) (rsbids has no such `Entity` class). The methods and properties of `Entity` are all implemented, however, because `rsbids` does not use regex when parsing paths, it can only "guess" at the `pattern` and `regex` properties of `Entity`. These should not be trusted for any automated use.
 - The methods searching for associated files on `BIDSLayout` are not yet implemented (including `get_bval`, `get_filedmap`, etc). `get_metadata` DOES work.
 - Path building methods and data copying methods are also not implemented (e.g. `build_path`, `write_to_file`)
@@ -122,6 +123,13 @@ With the split, arguments to `.get()` will always be interpreted as entity names
 
 ```python
 layout.get(subject="001") == layout.get(sub=="001")
+```
+
+`.get()` also allows you to add a final `_` to entity names, dropping the `_` before matching. This is useful for querying python reserved words like `from`:
+
+```py
+layout.get(from="MNI")  # !!! Syntax Error
+layout.get(from_="MNI")
 ```
 
 `.filter()` currently takes the following arguments:
@@ -239,6 +247,49 @@ layout.description.generated_by[0].name
 
 layout.description["Name"] # !!! Error
 ```
+
+
+### Metadata Indexing
+
+`pybids` defaults to indexing the metadata, significantly increasing the time to index. `rsbids` defaults to not indexing, since in our experience, the metadata is not needed for most applications. Instead of requesting metadata using an argument on the `rsbids.BidsLayout` constructor, metadata is requested using the following method:
+
+```py
+layout = rsbids.BidsLayout("dataset").index_metadata()
+```
+
+This decouples metadata retrieval from layout construction, providing a few advantages:
+
+- If you discover you later on need metadata, you don't have to reindex the entire layout (especially useful on network-attached filesystems with high latency)
+- You can even index metadata when reading a layout from cache
+- Functions consuming `BidsLayout` (e.g. from 3rd party apps) don't need to worry about whether metadata was indexed or not. If they need metadata, they can simply call `layout.index_metadata()`. If metadata is already indexed, the method will immediately return
+
+The method returns back the same bids layout, so it can be easily chained:
+
+```py
+layout.index_metadata().get(EchoTime="...")
+```
+
+
+### dtypes
+
+`pybids` associates each entity with a specific datatype. Most entities are strings, but some, such as `run`, are explicitely stored as integers.
+
+`rsbids` stores all entities as strings. This simplifies the layout internals and ensures entities are saved nondestructively. For those used to querying runs with integers, however, fear not! `rsbids.get()` accepts integer queries for ALL entities:
+
+```py
+layout.get(subject=1)
+
+# will match
+#   sub-001_T1w.nii.gz
+#   sub-01_T1w.nii.gz
+#   sub-1_T1w.nii.gz
+# but not
+#   sub-Pre1_T1w.nii.gz
+#   sub-Treatment001_T1w.nii.gz
+```
+
+If multiple valid matches are found, an error will be thrown.
+
 
 ### Flexible parsing algorithm
 
