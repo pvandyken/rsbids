@@ -59,14 +59,12 @@ class BidsPath(UserPath):
         self, paths: Iterable[Self], exclude: Container[str] | None = None
     ):
         exclude = set() if exclude is None else exclude
-        print(self)
         for path in paths:
             entities = {e: v for e, v in path.entities.items() if e not in exclude}
             theirs = set(entities.items())
             ours = set(self.entities.items())
             # They have no keys we don't have, and at least one of our keys
             if not theirs - ours and theirs & ours:
-                print(path)
                 yield path
 
     def _parse(self, path: Path):
