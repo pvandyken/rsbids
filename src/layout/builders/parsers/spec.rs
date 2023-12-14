@@ -36,8 +36,17 @@ impl<I: Fn(&str) -> bool> TemplateParser<I> {
                         }
                         self.bidspath.suffix = Some(range);
                     }
+                    Elements::KeyVal(keyval) => {
+                        let mut val = keyval.val_range();
+                        if let Some(extension) = self.bidspath.extract_extension(&mut val) {
+                            self.bidspath.extension = Some(extension);
+                        }
+                        self.bidspath
+                            .entities
+                            .push(KeyVal::new(keyval.start()..val.end, keyval.delimiter))
+                    }
                     _ => {
-                        // Very last element must be suffix
+                        // Very last element cannot be part
                         return Err(());
                     }
                 }
@@ -45,7 +54,7 @@ impl<I: Fn(&str) -> bool> TemplateParser<I> {
                 match elem {
                     Elements::KeyVal(keyval) => {
                         if (self.check_entity)(keyval.get_key(&self.bidspath.as_str())) {
-                            self.bidspath.parents.push(keyval.clone());
+                            self.bidspath.entities.push(keyval.clone());
                         } else {
                             self.bidspath.push_part(keyval.slice.clone());
                         }
@@ -115,15 +124,19 @@ impl BidsPathBuilder {
         for (i, comp) in self.components.into_iter().enumerate() {
             // Last component
             if i + 1 == len {
-                match comp {
-                    ComponentType::OneType(..) | ComponentType::ZeroType(..) => {
-                        return Err(BidsPathErr::Validation(parser.bidspath.clear()));
-                    }
-                    ComponentType::TwoType(elems) => {
-                        if let Err(_) = parser.handle_twotype(elems, true) {
-                            return Err(BidsPathErr::Validation(parser.bidspath.clear()));
+                if let Err(_) = parser.handle_twotype(
+                    match comp {
+                        ComponentType::ZeroType(suffix) => {
+                            vec![Elements::Suffix(suffix)]
                         }
-                    }
+                        ComponentType::OneType(keyval) => {
+                            vec![Elements::KeyVal(keyval)]
+                        }
+                        ComponentType::TwoType(elems) => elems,
+                    },
+                    true,
+                ) {
+                    return Err(BidsPathErr::Validation(parser.bidspath.clear()));
                 }
             } else {
                 match comp {

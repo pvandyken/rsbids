@@ -169,6 +169,16 @@ impl KeyVal {
         }
     }
 
+    #[inline]
+    pub fn start(&self) -> usize {
+        self.slice.start
+    }
+
+    #[inline]
+    pub fn end(&self) -> usize {
+        self.slice.end
+    }
+
     pub fn key_range(&self) -> Range<usize> {
         self.slice.start..self.delimiter
     }

@@ -1,6 +1,7 @@
 [project]
 name = "rsbids"
-requires-python = ">=3.8"
+# Going to need this until snakebids is fixed
+requires-python = ">=3.8,<3.13"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
@@ -26,4 +27,7 @@ dev = [
     "pytest-benchmark>=4.0.0",
     "pytest>=7.4.3",
     "pyright>=1.1.337",
+    "snakebids>=0.10.0",
+    "hypothesis>=6.91.0",
+    "more-itertools>=8",
 ]

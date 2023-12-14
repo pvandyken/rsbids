@@ -52,12 +52,12 @@ pub static BIDS_ENTITIES: Lazy<BiMap<&'static str, &'static str>> = Lazy::new(||
             ("from", "from"),
             ("to", "to"),
             ("mode", "mode"),
-            ("hemi", "hemisphere"),
+            ("hemi", "hemi"),
             ("res", "res"),
-            ("den", "density"),
+            ("den", "den"),
             ("model", "model"),
             ("subset", "subset"),
-            ("desc", "description"),
+            ("desc", "desc"),
         ]
     }
     .iter()
