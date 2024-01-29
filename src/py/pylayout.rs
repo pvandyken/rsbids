@@ -257,17 +257,22 @@ impl PyLayout {
                 }
             })
             .collect::<HashMap<_, _>>();
-        repr.push_str("Entities:\n");
-        for (key, val) in &kept_entities {
-            repr.push_str(&format!("    {}: {}\n", key, val));
+        if kept_entities.len() > 0 {
+            repr.push_str("Entities:\n");
+            for (key, val) in &kept_entities {
+                repr.push_str(&format!("    {}: {}\n", key, val));
+            }
         }
-        repr.push_str(&format!(
-            "Other entities: {}\n",
-            entities
-                .keys()
-                .filter(|key| { !kept_entities.contains_key(key) })
-                .join(", ")
+        if entities.len() -  kept_entities.len() > 0 {
+            repr.push_str(&format!(
+                "Other entities: {}\n",
+                entities
+                    .keys()
+                    .filter(|key| { !kept_entities.contains_key(key) })
+                    .join(", ")
         ));
+
+        }
         repr.push_str(&self.inner.fmt_elided_list(10));
         repr
     }
