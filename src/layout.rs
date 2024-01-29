@@ -500,7 +500,10 @@ impl Layout {
                         Some(queried) => {
                             match self.query_entity(queried, &entity, &values, &mut new_entities) {
                                 Ok(ent) => selected.push(ent),
-                                Err(err) => missing_vals.push(err),
+                                Err(err) => {
+                                    missing_vals.push(err);
+                                    selected.push(HashSet::new());
+                                }
                             }
                         }
                         None => {
@@ -520,7 +523,10 @@ impl Layout {
                                     &mut new_metadata,
                                 ) {
                                     Ok(ent) => md_selected.push(ent),
-                                    Err(err) => missing_vals.push(err),
+                                    Err(err) => {
+                                        missing_vals.push(err);
+                                    selected.push(HashSet::new());
+                                    }
                                 }
                             }
                             None => {
@@ -658,7 +664,6 @@ impl Layout {
             view: self.view.clone(),
         }
     }
-
 }
 
 impl PartialEq for Layout {
@@ -666,10 +671,8 @@ impl PartialEq for Layout {
         let same_view = || self.get_view() == other.get_view();
         // If both have the same path pointer, check is really quick
         if Arc::ptr_eq(&other.paths, &self.paths) {
-
             if same_view() {
                 true
-
             } else {
                 false
             }
