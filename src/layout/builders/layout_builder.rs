@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     errors::BidsPathErr,
     layout::{
-        bidspath::{BidsPath, UnknownDatatype, UnknownDatatypeTypes},
+        bidspath::{BidsPath, UnknownDatatypeTypes},
         entity_table::EntityTable,
         roots::{DatasetRoot, RootCategory},
         Layout,
