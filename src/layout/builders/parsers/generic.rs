@@ -43,6 +43,7 @@ impl BidsPathBuilder {
                 &ds_builder.entities,
             ));
         }
+        // dbg!(&self.path, &labelled);
         Self::collect_elements(
             ds_builder,
             BidsPath::new(self.path, self.root, self.depth),

@@ -89,7 +89,6 @@ enum PartialRoot {
     Derivative(PathBuf, Option<String>, Range<usize>),
 }
 
-
 #[derive(Debug, Default, Clone)]
 pub struct LayoutBuilder {
     paths: Vec<BidsPath>,
@@ -155,7 +154,6 @@ impl LayoutBuilder {
         self.unknown_datatypes.insert(self.current_path());
     }
 
-
     fn merge_path(&mut self, path: &BidsPath) {
         let i = self.current_path();
         for (entity, vals) in path.get_entities() {
@@ -189,7 +187,6 @@ impl LayoutBuilder {
             RootLabel::Raw => PartialRoot::Raw(root, new_range),
         });
         mem::swap(&mut self.current_root, &mut new_root);
-
 
         // Current position marks the end of the last root, so add it to official list
         let prev_root = new_root;
@@ -267,25 +264,29 @@ impl LayoutBuilder {
         Ok(())
     }
 
-    fn first_valid_datatype(
-        &self,
-        uncertain_datatypes: &mut Vec<UnknownDatatypeTypes>,
-    ) -> Option<UnknownDatatype> {
-        while let Some(dt) = uncertain_datatypes.pop() {
-            match dt {
-                UnknownDatatypeTypes::Linked(entity, dt) => {
-                    if self.check_entity(&entity) || dt.is_valid {
-                        return Some(dt);
+    fn handle_uncertain_datatypes(&mut self, i: usize) {
+        let mut datatypes = self.extract_uncertain_datatypes(i);
+        if let Some(datatypes) = datatypes.as_mut() {
+            while let Some(dt) = datatypes.pop() {
+                let (valid, dt) = match dt {
+                    UnknownDatatypeTypes::Linked(entity, dt) => {
+                        (self.check_entity(&entity) || dt.is_valid, dt)
                     }
+                    UnknownDatatypeTypes::Unlinked(dt) => (dt.is_valid, dt),
+                };
+                if valid {
+                    self.paths[i].datatype = Some(dt.value);
+                    break;
                 }
-                UnknownDatatypeTypes::Unlinked(dt) => {
-                    if dt.is_valid {
-                        return Some(dt);
-                    }
+                self.paths[i].head = dt.value.end;
+            }
+            while let Some(dt) = datatypes.pop() {
+                match dt {
+                    UnknownDatatypeTypes::Linked(_, dt) => self.paths[i].push_part(dt.value),
+                    UnknownDatatypeTypes::Unlinked(dt) => self.paths[i].push_part(dt.value),
                 }
             }
         }
-        None
     }
 
     fn extract_uncertain_datatypes(&mut self, i: usize) -> Option<Vec<UnknownDatatypeTypes>> {
@@ -297,20 +298,19 @@ impl LayoutBuilder {
 
     pub fn finalize(mut self) -> Layout {
         self.register_root(None, RootLabel::Raw);
+        let mut paths_to_update = HashSet::new();
+        for vals in self.unknown_entities.values() {
+            for i in vals.values().flatten() {
+                paths_to_update.insert(*i);
+            }
+        }
+        for i in paths_to_update {
+            self.paths[i].update_parents(&self.entities.keys().cloned().collect());
+        }
+
         let unknown_datatypes = self.unknown_datatypes.drain().collect_vec();
         for i in unknown_datatypes {
-            let mut datatypes = self.extract_uncertain_datatypes(i);
-            if let Some(datatypes) = datatypes.as_mut() {
-                if let Some(dt) = self.first_valid_datatype(datatypes) {
-                    self.paths[i].datatype = Some(dt.value)
-                }
-                while let Some(dt) = datatypes.pop() {
-                    match dt {
-                        UnknownDatatypeTypes::Linked(_, dt) => self.paths[i].push_part(dt.value),
-                        UnknownDatatypeTypes::Unlinked(dt) => self.paths[i].push_part(dt.value),
-                    }
-                }
-            }
+            self.handle_uncertain_datatypes(i);
         }
         let heads = self
             .heads
@@ -356,7 +356,8 @@ impl LayoutBuilder {
                 if is_subpath_of(&PathBuf::from(&head), &root) {
                     longest_head = None;
                     break;
-                } else if is_subpath_of(&root, &PathBuf::from(&head))
+                }
+                if is_subpath_of(&root, &PathBuf::from(&head))
                     && head.len() > longest_head.map(|h| h.len()).unwrap_or(0)
                 {
                     longest_head = Some(head)

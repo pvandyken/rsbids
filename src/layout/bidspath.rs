@@ -98,12 +98,18 @@ impl BidsPath {
         }
         let mut uncertain_parents = None;
         std::mem::swap(&mut self.uncertain_parents, &mut uncertain_parents);
-        for parent in uncertain_parents.as_mut()?.drain(..) {
+        let mut uncertain_parents = uncertain_parents.as_mut()?.drain(..).rev();
+        while let Some(parent) = uncertain_parents.next() {
             let key = parent.get_key(self.as_str());
             if parents.contains(key) {
-                self.parents.push(parent)
+                self.parents.push(parent);
+                // As soon as we find one confirmed parent, the rest must be good
+                break;
+            } else {
+                self.head = parent.end()
             }
         }
+        self.parents.extend(uncertain_parents);
         self.uncertain_parents = None;
         Some(())
     }
