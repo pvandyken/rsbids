@@ -256,7 +256,7 @@ impl Layout {
                 }
             }))
         } else {
-            Box::new(self.roots.raw_items())
+            Box::new(roots)
         }
     }
 
@@ -268,7 +268,7 @@ impl Layout {
 
     pub fn get_derivative_roots(&self) -> Vec<&PathBuf> {
         self.filtered_roots(self.roots.derivative_items())
-            .map(|r| r.0)
+            .map(|r| {r.0})
             .collect()
     }
 
