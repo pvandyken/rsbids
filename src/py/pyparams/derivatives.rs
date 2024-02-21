@@ -93,7 +93,10 @@ impl From<DerivParamPrimitive> for DerivativeSpec {
 impl<'a> TryFrom<DerivParamCollection<'a>> for DerivativeSpec {
     type Error = PyErr;
     fn try_from(value: DerivParamCollection<'a>) -> Result<Self, Self::Error> {
-        value.try_into()
+        Ok(Self {
+            label: None,
+            paths: value.try_into()?,
+        })
     }
 }
 
