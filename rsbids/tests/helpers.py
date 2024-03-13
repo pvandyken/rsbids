@@ -27,8 +27,9 @@ from typing_extensions import ParamSpec
 from snakebids import bids
 from snakebids.core.datasets import BidsDataset
 from snakebids.core.input_generation import generate_inputs
-from snakebids.types import InputsConfig, UserDictPy38, ZipList, ZipListLike
-from snakebids.utils.utils import BidsEntity, MultiSelectDict
+from snakebids.types import InputsConfig, ZipList, ZipListLike
+from snakebids.utils.utils import BidsEntity
+from snakebids.utils.containers import MultiSelectDict, UserDictPy38
 
 _T = TypeVar("_T")
 _T_contra = TypeVar("_T_contra", contravariant=True)

@@ -18,7 +18,8 @@ from snakebids.core.datasets import (
 )
 from rsbids.tests import helpers
 from snakebids.types import Expandable, InputConfig, InputsConfig, ZipList
-from snakebids.utils.utils import BidsEntity, MultiSelectDict, ContainerBag
+from snakebids.utils.utils import BidsEntity
+from snakebids.utils.containers import MultiSelectDict, ContainerBag
 
 _Ex_co = TypeVar("_Ex_co", bound=str, covariant=True)
 _T = TypeVar("_T")
@@ -91,17 +92,13 @@ def bids_entity(
     )
 
 
-def bids_value(pattern: str = r"[^\n\r]*") -> st.SearchStrategy[str]:
-    # Need the isdigit == isdecimal check to work around a pybids bug
-    return (
-        st.from_regex(pattern, fullmatch=True)
-        .filter(len)
-        # .filter(lambda s: all(c.isdigit() == c.isdecimal() for c in s))
-        # remove values leading with multiple dots ".." because pybids doesn't handle
-        # them correctly when applied to the "extension" entity
-        # also remove 
-        .filter(lambda s: "_" not in s)
-    )
+def bids_value(
+    pattern: str = r"[^\n\r]+", blacklist_characters: Iterable[str] | None = None
+) -> st.SearchStrategy[str]:
+    chars = {"/", "\x00"}
+    if blacklist_characters is not None:
+        chars |= set(blacklist_characters)
+    return st.from_regex(pattern, fullmatch=True).filter(lambda s: not (set(s) & chars))
 
 
 def _filter_invalid_entity_lists(entities: Sequence[BidsEntity | str]):
@@ -145,14 +142,21 @@ def entity_vals(
             whitelist_entities=whitelist_entities,
         )
     )
-
     return {
         str(entity): draw(
-                bids_value(entity.match if restrict_patterns else ".*"),
+            bids_value(
+                pattern=r"[^\n\r]+"
+                if entity.entity not in {"datatype", "extension"}
+                else entity.match,
+                blacklist_characters={
+                    "suffix": {"-", "."},
+                    "extension": {"-"},
+                    "datatype": {"-"},
+                }.get(entity.entity, {"_", "."}),
+            ),
         )
         for entity in entities
     }
-
 
 
 @st.composite
