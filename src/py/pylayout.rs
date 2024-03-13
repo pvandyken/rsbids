@@ -5,7 +5,8 @@ use std::sync::Arc;
 use itertools::Itertools;
 use pyo3::exceptions::{PyAttributeError, PyBaseException, PyException, PyKeyError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyType;
+use pyo3::types::{PyBytes, PyType};
+use serde::{Deserialize, Serialize};
 
 use super::pydescription::PyDatasetDescription;
 use super::pylayout_iterator::LayoutIterator;
@@ -20,11 +21,13 @@ use super::{
     },
 };
 use crate::dataset_description::DatasetDescription;
+use crate::errors::CacheErr;
 use crate::layout::cache::LayoutCache;
 use crate::layout::roots::RootCategory;
 use crate::layout::Layout;
 
 #[pyclass(module = "rsbids", name = "BidsLayout")]
+#[derive(Serialize, Deserialize)]
 pub struct PyLayout {
     pub inner: Layout,
 }
@@ -307,6 +310,18 @@ impl PyLayout {
         Self {
             inner: self.inner.deep_clone(),
         }
+    }
+
+    fn __getstate__(&self, py: Python) -> Result<Py<PyBytes>, CacheErr> {
+        let encoded: Py<PyBytes> = PyBytes::new(py, &bincode::serialize(&self.inner)?).into();
+        Ok(encoded)
+
+    }
+
+    fn __setstate__(&mut self, state: Vec<u8>) -> Result<(), CacheErr> {
+        let decoded: Layout = bincode::deserialize(&state)?;
+        self.inner = decoded;
+        Ok(())
     }
 }
 
