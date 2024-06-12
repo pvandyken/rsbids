@@ -31,3 +31,10 @@ dev = [
     "hypothesis>=6.91.0",
     "more-itertools>=8",
 ]
+
+[tool.codespell]
+# Ref: https://github.com/codespell-project/codespell#using-a-config-file
+skip = '.git*,*.lock'
+check-hidden = true
+# ignore-regex = ''
+# ignore-words-list = ''
