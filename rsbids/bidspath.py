@@ -44,7 +44,7 @@ class BidsPath(UserPath):
             jsons = [self._parse(p) for p in parent.iterdir() if p.suffix == ".json"]
             jsons = list(self._subset_paths(jsons, exclude="extension"))
 
-            # For propery bids validity, there should only be one file at this point,
+            # For proper bids validity, there should only be one file at this point,
             # but don't worry about that for now
             for path in jsons:
                 result.update(path.read_json())

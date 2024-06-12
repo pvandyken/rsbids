@@ -14,9 +14,9 @@ pub struct LayoutCache;
 
 impl LayoutCache {
     fn write(path: PathBuf, data: Vec<u8>) -> io::Result<()> {
-        let decleration = Vec::from(DECLARATION);
+        let declaration = Vec::from(DECLARATION);
         let mut file = fs::File::create(path)?;
-        file.write_all(&decleration)?;
+        file.write_all(&declaration)?;
         file.write_all(&data)?;
         Ok(())
     }
