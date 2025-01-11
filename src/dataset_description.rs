@@ -146,7 +146,7 @@ pub struct SourceDatasetBin {
     pub version: Option<String>,
 }
 
-/// DefaultOnError breaks bincode, so keep a seperate, simplified struct for encoding to bin
+/// DefaultOnError breaks bincode, so keep a separate, simplified struct for encoding to bin
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct DatasetDescriptionBin {
     pub name: Option<String>,

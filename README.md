@@ -6,7 +6,7 @@
 
 `rsbids` is a rust implementation of [`pybids`](https://github.com/bids-standard/pybids), currently under active development. It offers vastly improved runtimes compared to other bids indexers (benchmarks to come), a streamlined core api, and a pybids compatibility api.
 
-**`rsbids` is currently in alpha**. Most of the core pybids features are implemented, however, there is little to no automated testing or documentation. It has only rudimentary validation and no configurability. Pybids compatibility has been implemented for much of `pybids.layout.layout`, `pybids.layout.indexers`, and `pybids.layout.models`. Not all features are available, however. Whenever possible, a `CompatibilityError` or warning will be raised when these features are encountered. Finally, api stability is not guarenteed for any aspect of the api.
+**`rsbids` is currently in alpha**. Most of the core pybids features are implemented, however, there is little to no automated testing or documentation. It has only rudimentary validation and no configurability. Pybids compatibility has been implemented for much of `pybids.layout.layout`, `pybids.layout.indexers`, and `pybids.layout.models`. Not all features are available, however. Whenever possible, a `CompatibilityError` or warning will be raised when these features are encountered. Finally, api stability is not guaranteed for any aspect of the api.
 
 The alpha period is an opportunity to test and experiment. Community engagement and feedback is highly valued, and will have an impact on future development. In the immediate future, work will focus on testing, stability, and basic configuration/validation. However, any feature ideas and feedback on the api are welcome. (Note that there's a number of issues I'm already aware of, so be sure to read this document before leaving bug reports).
 
@@ -32,7 +32,7 @@ Benchmarks are calculated on the openly available [_HBN EO/EC task_ dataset](htt
 
 ## Pybids Compatibility
 
-A compability api can be found under `rsbids.pybids`. So in general, you can:
+A compatibility api can be found under `rsbids.pybids`. So in general, you can:
 
 ```py
 # replace
@@ -113,9 +113,9 @@ layout.get(subject="001", session="02", suffix="dwi", extension=".nii.gz")[0]
 layout.get(subject="001", session="02", suffix="dwi", extension=".nii.gz").one
 ```
 
-### Seperate `.get()` and `.filter()` methods
+### Separate `.get()` and `.filter()` methods
 
-`pybids` uses the `.get()` method as an omnibus query method. While convenient, it makes the method brittle because certain arguments are interpreted with special meaning (e.g. `scope`, `target`). This makes it challenging to add additional query methods (e.g. searching specificially by `pipeline` or file `root`).
+`pybids` uses the `.get()` method as an omnibus query method. While convenient, it makes the method brittle because certain arguments are interpreted with special meaning (e.g. `scope`, `target`). This makes it challenging to add additional query methods (e.g. searching specifically by `pipeline` or file `root`).
 
 With the split, arguments to `.get()` will always be interpreted as entity names (e.g. `subject`, `session`, `run`, etc) or metadata keys (e.g. `EchoTime`, etc). All other special search modes are handled by `.filter()`. Because each query returns a new layout, it's perfectly possible to chain these calls together, making an extremely flexible query interface.
 
@@ -272,7 +272,7 @@ layout.index_metadata().get(EchoTime="...")
 
 ### dtypes
 
-`pybids` associates each entity with a specific datatype. Most entities are strings, but some, such as `run`, are explicitely stored as integers.
+`pybids` associates each entity with a specific datatype. Most entities are strings, but some, such as `run`, are explicitly stored as integers.
 
 `rsbids` stores all entities as strings. This simplifies the layout internals and ensures entities are saved nondestructively. For those used to querying runs with integers, however, fear not! `rsbids.get()` accepts integer queries for ALL entities:
 
@@ -295,7 +295,7 @@ If multiple valid matches are found, an error will be thrown.
 
 `rsbids` has two variants of its parsing algorithm. One looks for `entity-value` pairs specifically defined by the bids spec (similar to how pybids and all other bids indexers currently work). Invalid entities (`..._foobar-val_...`) are ignored. This mode is enabled by `rsbids.layout(..., validate=True)`, and gives a validation experience _somewhat_ similar to `pybids.BIDSLayout(..., validate=False, is_derivative=True)` (note that this will change in the future to match the `pybids` defaults).
 
-The other parser is completely generic: it parses any path looking for `entity-value` combinations seperated by underscores (`_`). So long as the path structure looks _roughly_ bids-like, `rsbids` should correctly parse it, including missing extensions/suffixes, custom entities, any arbitrary value (so long as it has no `_`), custom datatypes, malformed directory structures, etc.
+The other parser is completely generic: it parses any path looking for `entity-value` combinations separated by underscores (`_`). So long as the path structure looks _roughly_ bids-like, `rsbids` should correctly parse it, including missing extensions/suffixes, custom entities, any arbitrary value (so long as it has no `_`), custom datatypes, malformed directory structures, etc.
 
 The flexible algorithm currently has **no** validation, so any path will be parsed into _something_ according to the algorithm. In the future, `rsbids` will allow for more fine-grained validation.
 
